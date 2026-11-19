@@ -1,8 +1,8 @@
 import express from 'express';
 import cors from 'cors';
-import { eq } from 'drizzle-orm';
+import { eq, and, inArray, asc } from 'drizzle-orm';
 import { checkDbConnection, db } from './db/index.js';
-import { users } from './db/schema.js';
+import { users, sections, enrollments, periods } from './db/schema.js';
 import {
   verifyPassword,
   createSession,
@@ -83,4 +83,124 @@ app.post('/auth/sign-out', requireAuth, async (req, res) => {
 // Explicit guard: users cannot change their role through the API
 app.all(['/auth/role', '/users/role'], requireAuth, (req, res) => {
   res.status(403).json({ error: 'Role modification forbidden' });
+});
+
+// Timetable and Schedule endpoints
+app.get('/schedule', requireAuth, async (req, res) => {
+  try {
+    const user = req.user;
+    let results = [];
+
+    if (user.role === 'teacher') {
+      results = await db
+        .select({
+          id: periods.id,
+          subject: periods.subject,
+          startTime: periods.startTime,
+          endTime: periods.endTime,
+          sectionId: sections.id,
+          sectionName: sections.name,
+          timezone: sections.timezone,
+          schoolDayStart: sections.schoolDayStart,
+          schoolDayEnd: sections.schoolDayEnd,
+          teacherId: periods.teacherId,
+          teacherName: users.name,
+        })
+        .from(periods)
+        .innerJoin(sections, eq(periods.sectionId, sections.id))
+        .innerJoin(users, eq(periods.teacherId, users.id))
+        .where(eq(periods.teacherId, user.id))
+        .orderBy(asc(periods.startTime));
+    } else {
+      const enrolledSections = await db
+        .select({ sectionId: enrollments.sectionId })
+        .from(enrollments)
+        .where(eq(enrollments.studentId, user.id));
+
+      if (enrolledSections.length === 0) {
+        return res.status(200).json({ schedule: [] });
+      }
+
+      const sectionIds = enrolledSections.map((e) => e.sectionId);
+      results = await db
+        .select({
+          id: periods.id,
+          subject: periods.subject,
+          startTime: periods.startTime,
+          endTime: periods.endTime,
+          sectionId: sections.id,
+          sectionName: sections.name,
+          timezone: sections.timezone,
+          schoolDayStart: sections.schoolDayStart,
+          schoolDayEnd: sections.schoolDayEnd,
+          teacherId: periods.teacherId,
+          teacherName: users.name,
+        })
+        .from(periods)
+        .innerJoin(sections, eq(periods.sectionId, sections.id))
+        .innerJoin(users, eq(periods.teacherId, users.id))
+        .where(inArray(periods.sectionId, sectionIds))
+        .orderBy(asc(periods.startTime));
+    }
+
+    res.status(200).json({ schedule: results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/schedule/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = req.user;
+
+    const rows = await db
+      .select({
+        id: periods.id,
+        subject: periods.subject,
+        startTime: periods.startTime,
+        endTime: periods.endTime,
+        sectionId: sections.id,
+        sectionName: sections.name,
+        timezone: sections.timezone,
+        schoolDayStart: sections.schoolDayStart,
+        schoolDayEnd: sections.schoolDayEnd,
+        teacherId: periods.teacherId,
+        teacherName: users.name,
+      })
+      .from(periods)
+      .innerJoin(sections, eq(periods.sectionId, sections.id))
+      .innerJoin(users, eq(periods.teacherId, users.id))
+      .where(eq(periods.id, id));
+
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Period not found' });
+    }
+
+    const period = rows[0];
+
+    if (user.role === 'teacher') {
+      if (period.teacherId !== user.id) {
+        return res.status(403).json({ error: 'Access denied: not assigned teacher' });
+      }
+    } else {
+      const enrollment = await db
+        .select()
+        .from(enrollments)
+        .where(
+          and(
+            eq(enrollments.sectionId, period.sectionId),
+            eq(enrollments.studentId, user.id)
+          )
+        );
+
+      if (!enrollment.length) {
+        return res.status(403).json({ error: 'Access denied: not enrolled in section' });
+      }
+    }
+
+    res.status(200).json({ period });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });

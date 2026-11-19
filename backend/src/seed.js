@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { eq } from 'drizzle-orm';
 import { db, pool } from './db/index.js';
-import { users } from './db/schema.js';
+import { users, sections, enrollments, periods } from './db/schema.js';
 import { hashPassword } from './auth.js';
 
 const SEED_USERS = [
@@ -32,21 +32,95 @@ const SEED_USERS = [
 ];
 
 async function seed() {
-  console.log('Seeding initial accounts...');
+  console.log('Seeding initial data...');
+
+  // 1. Users
+  const userMap = {};
   for (const account of SEED_USERS) {
-    const existing = await db.select().from(users).where(eq(users.email, account.email));
-    if (existing.length === 0) {
-      await db.insert(users).values({
-        email: account.email,
-        name: account.name,
-        role: account.role,
-        passwordHash: hashPassword(account.password),
-      });
+    let userRows = await db.select().from(users).where(eq(users.email, account.email));
+    if (userRows.length === 0) {
+      userRows = await db
+        .insert(users)
+        .values({
+          email: account.email,
+          name: account.name,
+          role: account.role,
+          passwordHash: hashPassword(account.password),
+        })
+        .returning();
       console.log(`Created user: ${account.email} (${account.role})`);
-    } else {
-      console.log(`User ${account.email} already exists.`);
+    }
+    userMap[account.email] = userRows[0];
+  }
+
+  // 2. Section
+  let sectionRows = await db.select().from(sections).where(eq(sections.name, 'Computer Science A'));
+  if (sectionRows.length === 0) {
+    sectionRows = await db
+      .insert(sections)
+      .values({
+        name: 'Computer Science A',
+        timezone: 'America/New_York',
+        schoolDayStart: '09:00',
+        schoolDayEnd: '17:00',
+      })
+      .returning();
+    console.log('Created section: Computer Science A');
+  }
+  const section = sectionRows[0];
+
+  // 3. Enrollments (student1 and student2; NOT unrelated)
+  for (const email of ['student1@pilot.edu', 'student2@pilot.edu']) {
+    const student = userMap[email];
+    const existingEnrollment = await db
+      .select()
+      .from(enrollments)
+      .where(eq(enrollments.studentId, student.id));
+
+    if (existingEnrollment.length === 0) {
+      await db.insert(enrollments).values({
+        sectionId: section.id,
+        studentId: student.id,
+      });
+      console.log(`Enrolled ${email} into section ${section.name}`);
     }
   }
+
+  // 4. Periods (two separated periods for teacher and section)
+  const teacher = userMap['teacher@pilot.edu'];
+  const now = new Date();
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(now.getUTCDate()).padStart(2, '0');
+  const todayStr = `${yyyy}-${mm}-${dd}`;
+
+  const periodDefinitions = [
+    {
+      subject: 'Database Systems',
+      startTime: new Date(`${todayStr}T09:30:00Z`),
+      endTime: new Date(`${todayStr}T10:30:00Z`),
+    },
+    {
+      subject: 'Mobile App Development',
+      startTime: new Date(`${todayStr}T11:30:00Z`),
+      endTime: new Date(`${todayStr}T12:30:00Z`),
+    },
+  ];
+
+  const existingPeriods = await db.select().from(periods).where(eq(periods.sectionId, section.id));
+  if (existingPeriods.length === 0) {
+    for (const p of periodDefinitions) {
+      await db.insert(periods).values({
+        sectionId: section.id,
+        teacherId: teacher.id,
+        subject: p.subject,
+        startTime: p.startTime,
+        endTime: p.endTime,
+      });
+      console.log(`Created period: ${p.subject} (${p.startTime.toISOString()} - ${p.endTime.toISOString()})`);
+    }
+  }
+
   console.log('Seeding finished.');
   await pool.end();
 }
