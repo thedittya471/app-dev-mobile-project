@@ -31,6 +31,24 @@ app.use(
 
 app.use(express.json());
 
+function getDateInTimezone(dateObj, timezone = 'America/New_York') {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(dateObj));
+}
+
+function formatTimeInTimezone(dateObj, timezone = 'America/New_York') {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).format(new Date(dateObj));
+}
+
 // Health check
 app.get('/health', async (req, res) => {
   try {
@@ -89,6 +107,8 @@ app.all(['/auth/role', '/users/role'], requireAuth, (req, res) => {
 app.get('/schedule', requireAuth, async (req, res) => {
   try {
     const user = req.user;
+    const filterDate = req.query.date;
+
     let results = [];
 
     if (user.role === 'teacher') {
@@ -118,7 +138,11 @@ app.get('/schedule', requireAuth, async (req, res) => {
         .where(eq(enrollments.studentId, user.id));
 
       if (enrolledSections.length === 0) {
-        return res.status(200).json({ schedule: [] });
+        return res.status(200).json({
+          schedule: [],
+          institutionDate: getDateInTimezone(new Date(), 'America/New_York'),
+          institutionTimezone: 'America/New_York',
+        });
       }
 
       const sectionIds = enrolledSections.map((e) => e.sectionId);
@@ -143,7 +167,33 @@ app.get('/schedule', requireAuth, async (req, res) => {
         .orderBy(asc(periods.startTime));
     }
 
-    res.status(200).json({ schedule: results });
+    const institutionTimezone = results[0]?.timezone || 'America/New_York';
+    const institutionToday = getDateInTimezone(new Date(), institutionTimezone);
+
+    let mapped = results.map((p) => {
+      const periodTimezone = p.timezone || institutionTimezone;
+      const periodDate = getDateInTimezone(p.startTime, periodTimezone);
+      const startFormatted = formatTimeInTimezone(p.startTime, periodTimezone);
+      const endFormatted = formatTimeInTimezone(p.endTime, periodTimezone);
+      return {
+        ...p,
+        periodDate,
+        formattedTime: `${startFormatted} - ${endFormatted}`,
+        startTimeFormatted: startFormatted,
+        endTimeFormatted: endFormatted,
+      };
+    });
+
+    if (filterDate) {
+      const targetDate = filterDate === 'today' ? institutionToday : filterDate;
+      mapped = mapped.filter((p) => p.periodDate === targetDate);
+    }
+
+    res.status(200).json({
+      schedule: mapped,
+      institutionDate: institutionToday,
+      institutionTimezone,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -169,9 +219,9 @@ app.get('/schedule/:id', requireAuth, async (req, res) => {
         teacherName: users.name,
       })
       .from(periods)
-      .innerJoin(sections, eq(periods.sectionId, sections.id))
-      .innerJoin(users, eq(periods.teacherId, users.id))
-      .where(eq(periods.id, id));
+        .innerJoin(sections, eq(periods.sectionId, sections.id))
+        .innerJoin(users, eq(periods.teacherId, users.id))
+        .where(eq(periods.id, id));
 
     if (!rows.length) {
       return res.status(404).json({ error: 'Period not found' });
@@ -199,7 +249,20 @@ app.get('/schedule/:id', requireAuth, async (req, res) => {
       }
     }
 
-    res.status(200).json({ period });
+    const periodTimezone = period.timezone || 'America/New_York';
+    const periodDate = getDateInTimezone(period.startTime, periodTimezone);
+    const startFormatted = formatTimeInTimezone(period.startTime, periodTimezone);
+    const endFormatted = formatTimeInTimezone(period.endTime, periodTimezone);
+
+    res.status(200).json({
+      period: {
+        ...period,
+        periodDate,
+        formattedTime: `${startFormatted} - ${endFormatted}`,
+        startTimeFormatted: startFormatted,
+        endTimeFormatted: endFormatted,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

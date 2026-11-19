@@ -86,39 +86,40 @@ async function seed() {
     }
   }
 
-  // 4. Periods (two separated periods for teacher and section)
+  // 4. Periods (two separated periods on today's date in America/New_York)
   const teacher = userMap['teacher@pilot.edu'];
-  const now = new Date();
-  const yyyy = now.getUTCFullYear();
-  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(now.getUTCDate()).padStart(2, '0');
-  const todayStr = `${yyyy}-${mm}-${dd}`;
+  const nyTodayStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+
+  // Clean old periods for clean testing
+  await db.delete(periods).where(eq(periods.sectionId, section.id));
 
   const periodDefinitions = [
     {
       subject: 'Database Systems',
-      startTime: new Date(`${todayStr}T09:30:00Z`),
-      endTime: new Date(`${todayStr}T10:30:00Z`),
+      startTime: new Date(`${nyTodayStr}T09:30:00-05:00`),
+      endTime: new Date(`${nyTodayStr}T10:30:00-05:00`),
     },
     {
       subject: 'Mobile App Development',
-      startTime: new Date(`${todayStr}T11:30:00Z`),
-      endTime: new Date(`${todayStr}T12:30:00Z`),
+      startTime: new Date(`${nyTodayStr}T11:30:00-05:00`),
+      endTime: new Date(`${nyTodayStr}T12:30:00-05:00`),
     },
   ];
 
-  const existingPeriods = await db.select().from(periods).where(eq(periods.sectionId, section.id));
-  if (existingPeriods.length === 0) {
-    for (const p of periodDefinitions) {
-      await db.insert(periods).values({
-        sectionId: section.id,
-        teacherId: teacher.id,
-        subject: p.subject,
-        startTime: p.startTime,
-        endTime: p.endTime,
-      });
-      console.log(`Created period: ${p.subject} (${p.startTime.toISOString()} - ${p.endTime.toISOString()})`);
-    }
+  for (const p of periodDefinitions) {
+    await db.insert(periods).values({
+      sectionId: section.id,
+      teacherId: teacher.id,
+      subject: p.subject,
+      startTime: p.startTime,
+      endTime: p.endTime,
+    });
+    console.log(`Created period: ${p.subject} in ${section.timezone} (${p.startTime.toISOString()} - ${p.endTime.toISOString()})`);
   }
 
   console.log('Seeding finished.');
