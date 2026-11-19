@@ -1,31 +1,55 @@
 import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
-import { API_BASE_URL } from './src/config/api';
+import { StyleSheet, View, ActivityIndicator } from 'react-native';
+import { getCurrentUser, signOut } from './src/services/auth';
+import SignInScreen from './src/screens/SignInScreen';
+import TeacherDashboard from './src/screens/TeacherDashboard';
+import StudentDashboard from './src/screens/StudentDashboard';
 
 export default function App() {
-  const [health, setHealth] = useState({ status: 'checking', message: '' });
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/health`)
-      .then(async (res) => {
-        const data = await res.json();
-        setHealth({
-          status: res.ok ? 'connected' : 'error',
-          message: JSON.stringify(data),
-        });
-      })
-      .catch((err) => {
-        setHealth({ status: 'unreachable', message: err.message });
-      });
+    async function initAuth() {
+      try {
+        const currentUser = await getCurrentUser();
+        setUser(currentUser);
+      } catch {
+        setUser(null);
+      } finally {
+        setLoading(false);
+      }
+    }
+    initAuth();
   }, []);
+
+  async function handleSignOut() {
+    setLoading(true);
+    await signOut();
+    setUser(null);
+    setLoading(false);
+  }
+
+  function renderContent() {
+    if (loading) {
+      return <ActivityIndicator size="large" color="#2563eb" />;
+    }
+
+    if (!user) {
+      return <SignInScreen onSignInSuccess={(loggedInUser) => setUser(loggedInUser)} />;
+    }
+
+    if (user.role === 'teacher') {
+      return <TeacherDashboard user={user} onSignOut={handleSignOut} />;
+    }
+
+    return <StudentDashboard user={user} onSignOut={handleSignOut} />;
+  }
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Student Attendance & Planner</Text>
-      <Text style={styles.subtitle}>API Base: {API_BASE_URL}</Text>
-      <Text style={styles.status}>Backend: {health.status}</Text>
-      <Text style={styles.detail}>{health.message}</Text>
+      {renderContent()}
       <StatusBar style="auto" />
     </View>
   );
@@ -34,31 +58,9 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#f8fafc',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
-  },
-  title: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#666666',
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  status: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  detail: {
-    fontSize: 12,
-    color: '#888888',
-    textAlign: 'center',
+    padding: 16,
   },
 });

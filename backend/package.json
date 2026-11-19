@@ -8,6 +8,7 @@
     "dev": "node --watch src/server.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node src/migrate.js",
+    "db:seed": "node src/seed.js",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
