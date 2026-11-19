@@ -7,7 +7,7 @@ import {
   ActivityIndicator,
   ScrollView,
 } from 'react-native';
-import { getSchedule } from '../services/schedule';
+import { getSchedule, getPeriodById } from '../services/schedule';
 
 export default function StudentDashboard({ user, onSignOut }) {
   const [scheduleData, setScheduleData] = useState({
@@ -16,8 +16,11 @@ export default function StudentDashboard({ user, onSignOut }) {
     institutionTimezone: '',
   });
   const [selectedDate, setSelectedDate] = useState('today');
+  const [selectedPeriod, setSelectedPeriod] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [detailError, setDetailError] = useState(null);
 
   const loadSchedule = useCallback(async (dateParam) => {
     setLoading(true);
@@ -36,8 +39,23 @@ export default function StudentDashboard({ user, onSignOut }) {
     loadSchedule(selectedDate);
   }, [loadSchedule, selectedDate]);
 
-  function handleSelectDate(dateKey) {
-    setSelectedDate(dateKey);
+  async function handleOpenPeriod(periodId) {
+    setDetailLoading(true);
+    setDetailError(null);
+    try {
+      const period = await getPeriodById(periodId);
+      setSelectedPeriod(period);
+    } catch (err) {
+      setDetailError(err.message || 'Inaccessible or missing period');
+      setSelectedPeriod(null);
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  function handleBackToTimetable() {
+    setSelectedPeriod(null);
+    setDetailError(null);
   }
 
   return (
@@ -56,88 +74,141 @@ export default function StudentDashboard({ user, onSignOut }) {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.dateSelector}>
-          <TouchableOpacity
-            style={[styles.dateTab, selectedDate === 'today' && styles.dateTabActive]}
-            onPress={() => handleSelectDate('today')}
-          >
-            <Text
-              style={[
-                styles.dateTabText,
-                selectedDate === 'today' && styles.dateTabTextActive,
-              ]}
-            >
-              Today
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.dateTab, selectedDate === '2026-11-20' && styles.dateTabActive]}
-            onPress={() => handleSelectDate('2026-11-20')}
-          >
-            <Text
-              style={[
-                styles.dateTabText,
-                selectedDate === '2026-11-20' && styles.dateTabTextActive,
-              ]}
-            >
-              Empty Day
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.timezoneBanner}>
-          <Text style={styles.timezoneLabel}>Institution Date & Timezone:</Text>
-          <Text style={styles.timezoneValue}>
-            {scheduleData.institutionDate || 'Loading...'} ({scheduleData.institutionTimezone || 'America/New_York'})
-          </Text>
-        </View>
-
-        <Text style={styles.sectionTitle}>{"Today's Classes"}</Text>
-
-        {loading ? (
-          <View style={styles.stateBox}>
-            <ActivityIndicator size="small" color="#2563eb" />
-            <Text style={styles.stateText}>Loading classes...</Text>
-          </View>
-        ) : error ? (
-          <View style={[styles.stateBox, styles.errorBox]}>
-            <Text style={styles.errorText}>{error}</Text>
+        {selectedPeriod ? (
+          <View style={styles.detailContainer}>
             <TouchableOpacity
-              style={styles.retryButton}
-              onPress={() => loadSchedule(selectedDate)}
+              style={styles.backButton}
+              onPress={handleBackToTimetable}
             >
-              <Text style={styles.retryButtonText}>Retry</Text>
+              <Text style={styles.backButtonText}>{"← Back to Today"}</Text>
             </TouchableOpacity>
-          </View>
-        ) : scheduleData.schedule.length === 0 ? (
-          <View style={[styles.stateBox, styles.emptyBox]}>
-            <Text style={styles.emptyTitle}>No Classes Scheduled</Text>
-            <Text style={styles.emptySubtitle}>
-              There are no classes scheduled for this date in the institution calendar.
-            </Text>
-            <TouchableOpacity
-              style={styles.refreshButton}
-              onPress={() => loadSchedule(selectedDate)}
-            >
-              <Text style={styles.refreshButtonText}>Refresh</Text>
-            </TouchableOpacity>
+
+            <View style={styles.detailCard}>
+              <Text style={styles.detailSubject}>{selectedPeriod.subject}</Text>
+              <Text style={styles.detailSection}>{selectedPeriod.sectionName}</Text>
+              <Text style={styles.detailTime}>{selectedPeriod.formattedTime}</Text>
+
+              <View style={styles.metaRow}>
+                <Text style={styles.metaLabel}>Teacher:</Text>
+                <Text style={styles.metaValue}>{selectedPeriod.teacherName}</Text>
+              </View>
+              <View style={styles.metaRow}>
+                <Text style={styles.metaLabel}>Date:</Text>
+                <Text style={styles.metaValue}>{selectedPeriod.periodDate}</Text>
+              </View>
+              <View style={styles.metaRow}>
+                <Text style={styles.metaLabel}>Timezone:</Text>
+                <Text style={styles.metaValue}>{selectedPeriod.timezone}</Text>
+              </View>
+            </View>
           </View>
         ) : (
-          <View style={styles.classList}>
-            {scheduleData.schedule.map((item, index) => (
-              <View key={item.id} style={styles.classItem}>
-                <View style={styles.classIndex}>
-                  <Text style={styles.classIndexText}>{index + 1}</Text>
-                </View>
-                <View style={styles.classDetails}>
-                  <Text style={styles.classSubject}>{item.subject}</Text>
-                  <Text style={styles.classTime}>{item.formattedTime}</Text>
-                  <Text style={styles.classMeta}>
-                    {item.teacherName} • {item.sectionName}
-                  </Text>
-                </View>
+          <View>
+            <View style={styles.dateSelector}>
+              <TouchableOpacity
+                style={[styles.dateTab, selectedDate === 'today' && styles.dateTabActive]}
+                onPress={() => setSelectedDate('today')}
+              >
+                <Text
+                  style={[
+                    styles.dateTabText,
+                    selectedDate === 'today' && styles.dateTabTextActive,
+                  ]}
+                >
+                  Today
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dateTab, selectedDate === '2026-11-20' && styles.dateTabActive]}
+                onPress={() => setSelectedDate('2026-11-20')}
+              >
+                <Text
+                  style={[
+                    styles.dateTabText,
+                    selectedDate === '2026-11-20' && styles.dateTabTextActive,
+                  ]}
+                >
+                  Empty Day
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.timezoneBanner}>
+              <Text style={styles.timezoneLabel}>Institution Date & Timezone:</Text>
+              <Text style={styles.timezoneValue}>
+                {scheduleData.institutionDate || 'Loading...'} (
+                {scheduleData.institutionTimezone || 'America/New_York'})
+              </Text>
+            </View>
+
+            <Text style={styles.sectionTitle}>{"Today's Classes"}</Text>
+
+            {detailLoading ? (
+              <View style={styles.stateBox}>
+                <ActivityIndicator size="small" color="#2563eb" />
+                <Text style={styles.stateText}>Loading period details...</Text>
               </View>
-            ))}
+            ) : detailError ? (
+              <View style={[styles.stateBox, styles.errorBox]}>
+                <Text style={styles.errorText}>{detailError}</Text>
+                <TouchableOpacity
+                  style={styles.retryButton}
+                  onPress={handleBackToTimetable}
+                >
+                  <Text style={styles.retryButtonText}>Dismiss</Text>
+                </TouchableOpacity>
+              </View>
+            ) : loading ? (
+              <View style={styles.stateBox}>
+                <ActivityIndicator size="small" color="#2563eb" />
+                <Text style={styles.stateText}>Loading classes...</Text>
+              </View>
+            ) : error ? (
+              <View style={[styles.stateBox, styles.errorBox]}>
+                <Text style={styles.errorText}>{error}</Text>
+                <TouchableOpacity
+                  style={styles.retryButton}
+                  onPress={() => loadSchedule(selectedDate)}
+                >
+                  <Text style={styles.retryButtonText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : scheduleData.schedule.length === 0 ? (
+              <View style={[styles.stateBox, styles.emptyBox]}>
+                <Text style={styles.emptyTitle}>No Classes Scheduled</Text>
+                <Text style={styles.emptySubtitle}>
+                  There are no classes scheduled for this date in the institution calendar.
+                </Text>
+                <TouchableOpacity
+                  style={styles.refreshButton}
+                  onPress={() => loadSchedule(selectedDate)}
+                >
+                  <Text style={styles.refreshButtonText}>Refresh</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.classList}>
+                {scheduleData.schedule.map((item, index) => (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={styles.classItem}
+                    onPress={() => handleOpenPeriod(item.id)}
+                  >
+                    <View style={styles.classIndex}>
+                      <Text style={styles.classIndexText}>{index + 1}</Text>
+                    </View>
+                    <View style={styles.classDetails}>
+                      <Text style={styles.classSubject}>{item.subject}</Text>
+                      <Text style={styles.classTime}>{item.formattedTime}</Text>
+                      <Text style={styles.classMeta}>
+                        {item.teacherName} • {item.sectionName}
+                      </Text>
+                    </View>
+                    <Text style={styles.arrowText}>{"→"}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
           </View>
         )}
       </View>
@@ -364,5 +435,64 @@ const styles = StyleSheet.create({
   classMeta: {
     fontSize: 12,
     color: '#64748b',
+  },
+  arrowText: {
+    fontSize: 18,
+    color: '#94a3b8',
+    paddingHorizontal: 4,
+  },
+  detailContainer: {
+    marginTop: 4,
+  },
+  backButton: {
+    alignSelf: 'flex-start',
+    marginBottom: 16,
+    paddingVertical: 6,
+  },
+  backButtonText: {
+    fontSize: 14,
+    color: '#2563eb',
+    fontWeight: '600',
+  },
+  detailCard: {
+    padding: 18,
+    backgroundColor: '#f8fafc',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  detailSubject: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#0f172a',
+    marginBottom: 4,
+  },
+  detailSection: {
+    fontSize: 15,
+    color: '#475569',
+    fontWeight: '500',
+    marginBottom: 8,
+  },
+  detailTime: {
+    fontSize: 15,
+    color: '#2563eb',
+    fontWeight: '600',
+    marginBottom: 16,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  metaLabel: {
+    fontSize: 13,
+    color: '#64748b',
+  },
+  metaValue: {
+    fontSize: 13,
+    color: '#0f172a',
+    fontWeight: '500',
   },
 });

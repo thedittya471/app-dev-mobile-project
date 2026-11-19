@@ -22,3 +22,21 @@ export async function getSchedule(dateParam = 'today') {
 
   return data;
 }
+
+export async function getPeriodById(periodId) {
+  const token = await getToken();
+  if (!token) {
+    throw new Error('Not authenticated');
+  }
+
+  const res = await fetch(`${API_BASE_URL}/schedule/${encodeURIComponent(periodId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to fetch period');
+  }
+
+  return data.period;
+}
