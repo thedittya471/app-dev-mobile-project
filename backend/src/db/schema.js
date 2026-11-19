@@ -1,0 +1,2 @@
+// Database schema definitions will be added in upcoming tasks
+export {};
