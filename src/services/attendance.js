@@ -78,3 +78,23 @@ export async function submitCheckIn(payload) {
 
   return data;
 }
+
+export async function closeAttendanceSession(sessionId) {
+  const token = await getToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const res = await fetch(`${API_BASE_URL}/attendance/sessions/${encodeURIComponent(sessionId)}/close`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to close attendance session');
+  }
+
+  return data;
+}

@@ -13,6 +13,7 @@ import {
   openAttendanceSession,
   getSessionQrCode,
   getAttendanceSession,
+  closeAttendanceSession,
 } from '../services/attendance';
 
 export default function TeacherDashboard({ user, onSignOut }) {
@@ -27,6 +28,7 @@ export default function TeacherDashboard({ user, onSignOut }) {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(false);
+  const [closeLoading, setCloseLoading] = useState(false);
   const [error, setError] = useState(null);
   const [detailError, setDetailError] = useState(null);
   const [sessionError, setSessionError] = useState(null);
@@ -182,6 +184,22 @@ export default function TeacherDashboard({ user, onSignOut }) {
     }
   }
 
+  async function handleCloseSession() {
+    if (!activeSessionData?.session?.id) return;
+    setCloseLoading(true);
+    setSessionError(null);
+    try {
+      const result = await closeAttendanceSession(activeSessionData.session.id);
+      setActiveSessionData(result);
+      setQrData(null);
+      setCountdown(0);
+    } catch (err) {
+      setSessionError(err.message || 'Failed to close attendance session');
+    } finally {
+      setCloseLoading(false);
+    }
+  }
+
   function handleBackToTimetable() {
     setSelectedPeriod(null);
     setActiveSessionData(null);
@@ -233,175 +251,244 @@ export default function TeacherDashboard({ user, onSignOut }) {
                 <Text style={styles.metaValue}>{selectedPeriod.timezone}</Text>
               </View>
 
-              {activeSessionData ? (
-                <View style={styles.sessionBox}>
-                  <View style={styles.sessionStatusRow}>
-                    <View style={styles.statusPill}>
-                      <Text style={styles.statusPillText}>
-                        {activeSessionData.session.status.toUpperCase()}
-                      </Text>
-                    </View>
-                    <Text style={styles.sessionMetaText}>
-                      Opened: {new Date(activeSessionData.session.openedAt).toLocaleTimeString()}
-                    </Text>
-                  </View>
+              {activeSessionData ? (() => {
+                const isClosed = activeSessionData.session.status === 'closed';
+                const totalEnrolled = activeSessionData.roster.length;
+                const checkedInCount = activeSessionData.roster.filter((s) => s.status === 'present').length;
+                const absentCount = activeSessionData.roster.filter((s) => s.status === 'absent').length;
+                const pendingCount = activeSessionData.roster.filter((s) => s.status === 'pending').length;
+                const percentage = totalEnrolled ? Math.round((checkedInCount / totalEnrolled) * 100) : 0;
 
-                  <View style={styles.rosterSectionHeader}>
-                    <View>
-                      <Text style={styles.rosterTitle}>
-                        Private Attendance Roster ({activeSessionData.roster.length} students)
-                      </Text>
-                      <Text style={styles.rosterSummaryText}>
-                        Checked In: {activeSessionData.roster.filter((s) => s.status === 'present').length} of {activeSessionData.roster.length} ({activeSessionData.roster.length ? Math.round((activeSessionData.roster.filter((s) => s.status === 'present').length / activeSessionData.roster.length) * 100) : 0}%)
-                      </Text>
-                    </View>
-                    <TouchableOpacity
-                      style={styles.rosterRefreshButton}
-                      onPress={() => loadRoster(activeSessionData.session.id, false)}
-                      disabled={rosterLoading || rosterRefreshing}
-                    >
-                      {rosterRefreshing ? (
-                        <ActivityIndicator size="small" color="#166534" />
-                      ) : (
-                        <Text style={styles.rosterRefreshButtonText}>↻ Refresh</Text>
-                      )}
-                    </TouchableOpacity>
-                  </View>
+                return (
+                  <View style={[styles.sessionBox, isClosed && styles.sessionBoxClosed]}>
+                    {sessionError ? (
+                      <View style={styles.errorBox}>
+                        <Text style={styles.errorText}>{sessionError}</Text>
+                      </View>
+                    ) : null}
 
-                  <View style={styles.progressBarContainer}>
-                    <View
-                      style={[
-                        styles.progressBarFill,
-                        {
-                          width: `${activeSessionData.roster.length ? Math.round((activeSessionData.roster.filter((s) => s.status === 'present').length / activeSessionData.roster.length) * 100) : 0}%`,
-                        },
-                      ]}
-                    />
-                  </View>
-
-                  <View style={styles.summaryPillRow}>
-                    <View style={styles.presentCountPill}>
-                      <Text style={styles.presentCountText}>
-                        ✓ {activeSessionData.roster.filter((s) => s.status === 'present').length} Checked In
+                    <View style={styles.sessionStatusRow}>
+                      <View style={[styles.statusPill, isClosed && styles.statusPillClosed]}>
+                        <Text style={styles.statusPillText}>
+                          {isClosed ? 'CLOSED (FINALIZED)' : 'OPEN'}
+                        </Text>
+                      </View>
+                      <Text style={[styles.sessionMetaText, isClosed && styles.sessionMetaTextClosed]}>
+                        {isClosed
+                          ? `Closed: ${new Date(activeSessionData.session.closedAt || Date.now()).toLocaleTimeString()}`
+                          : `Opened: ${new Date(activeSessionData.session.openedAt).toLocaleTimeString()}`}
                       </Text>
                     </View>
-                    <View style={styles.pendingCountPill}>
-                      <Text style={styles.pendingCountText}>
-                        ⏳ {activeSessionData.roster.filter((s) => s.status === 'pending').length} Pending
-                      </Text>
-                    </View>
-                  </View>
 
-                  {rosterLoading ? (
-                    <View style={styles.rosterLoadingBox}>
-                      <ActivityIndicator size="small" color="#166534" />
-                      <Text style={styles.rosterLoadingText}>Loading roster...</Text>
-                    </View>
-                  ) : rosterError ? (
-                    <View style={styles.rosterErrorBox}>
-                      <Text style={styles.rosterErrorText}>{rosterError}</Text>
-                      <TouchableOpacity
-                        style={styles.rosterRetryButton}
-                        onPress={() => loadRoster(activeSessionData.session.id, false)}
-                      >
-                        <Text style={styles.rosterRetryButtonText}>Retry Roster</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ) : (
-                    <View style={styles.rosterList}>
-                      {activeSessionData.roster.map((s) => {
-                        const isPresent = s.status === 'present';
-                        return (
-                          <View
-                            key={s.id}
-                            style={[styles.rosterRow, isPresent && styles.rosterRowPresent]}
-                          >
-                            <View style={styles.rosterStudentInfo}>
-                              <Text style={styles.studentName}>{s.studentName}</Text>
-                              <Text style={styles.studentEmail}>{s.studentEmail}</Text>
-                            </View>
-                            <View
-                              style={[
-                                styles.rosterStatusPill,
-                                isPresent
-                                  ? styles.rosterStatusPillPresent
-                                  : styles.rosterStatusPillPending,
-                              ]}
-                            >
-                              <Text
-                                style={[
-                                  styles.rosterStatusText,
-                                  isPresent
-                                    ? styles.rosterStatusTextPresent
-                                    : styles.rosterStatusTextPending,
-                                ]}
-                              >
-                                {isPresent ? '✓ Checked In' : '⏳ Pending'}
-                              </Text>
-                            </View>
-                          </View>
-                        );
-                      })}
-                    </View>
-                  )}
-                  <View style={styles.qrCard}>
-                    <View style={styles.qrHeaderRow}>
-                      <Text style={styles.qrTitle}>Classroom Check-In QR</Text>
-                      {countdown > 0 ? (
-                        <View style={[styles.timerBadge, countdown <= 5 && styles.timerBadgeExpiring]}>
-                          <Text style={[styles.timerText, countdown <= 5 && styles.timerTextExpiring]}>
-                            {qrLoading ? 'Refreshing...' : `Expires in ${countdown}s`}
-                          </Text>
-                        </View>
+                    {isClosed ? (
+                      <View style={styles.closedBannerBox}>
+                        <Text style={styles.closedBannerTitle}>✓ Session Finalized</Text>
+                        <Text style={styles.closedBannerSubtitle}>
+                          Check-in is closed and unconfirmed students were recorded as absent.
+                        </Text>
+                      </View>
+                    ) : null}
+
+                    <View style={styles.rosterSectionHeader}>
+                      <View>
+                        <Text style={styles.rosterTitle}>
+                          Private Attendance Roster ({totalEnrolled} students)
+                        </Text>
+                        <Text style={styles.rosterSummaryText}>
+                          {isClosed
+                            ? `Finalized: ${checkedInCount} Present, ${absentCount} Absent (${percentage}%)`
+                            : `Checked In: ${checkedInCount} of ${totalEnrolled} (${percentage}%)`}
+                        </Text>
+                      </View>
+                      {!isClosed ? (
+                        <TouchableOpacity
+                          style={styles.rosterRefreshButton}
+                          onPress={() => loadRoster(activeSessionData.session.id, false)}
+                          disabled={rosterLoading || rosterRefreshing}
+                        >
+                          {rosterRefreshing ? (
+                            <ActivityIndicator size="small" color="#166534" />
+                          ) : (
+                            <Text style={styles.rosterRefreshButtonText}>↻ Refresh</Text>
+                          )}
+                        </TouchableOpacity>
                       ) : null}
                     </View>
 
-                    <Text style={styles.qrSubtitle}>
-                      Scan with student mobile app to record attendance
-                    </Text>
+                    <View style={styles.progressBarContainer}>
+                      <View
+                        style={[
+                          styles.progressBarFill,
+                          {
+                            width: `${percentage}%`,
+                          },
+                        ]}
+                      />
+                    </View>
 
-                    {qrLoading && !qrData ? (
-                      <View style={styles.qrPlaceholder}>
-                        <ActivityIndicator size="large" color="#16a34a" />
-                        <Text style={styles.qrLoadingText}>Generating QR code...</Text>
+                    <View style={styles.summaryPillRow}>
+                      <View style={styles.presentCountPill}>
+                        <Text style={styles.presentCountText}>
+                          ✓ {checkedInCount} Present
+                        </Text>
                       </View>
-                    ) : qrError ? (
-                      <View style={styles.qrErrorBox}>
-                        <Text style={styles.qrErrorText}>{qrError}</Text>
+                      {isClosed ? (
+                        <View style={styles.absentCountPill}>
+                          <Text style={styles.absentCountText}>
+                            ✕ {absentCount} Absent
+                          </Text>
+                        </View>
+                      ) : (
+                        <View style={styles.pendingCountPill}>
+                          <Text style={styles.pendingCountText}>
+                            ⏳ {pendingCount} Pending
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+
+                    {rosterLoading ? (
+                      <View style={styles.rosterLoadingBox}>
+                        <ActivityIndicator size="small" color="#166534" />
+                        <Text style={styles.rosterLoadingText}>Loading roster...</Text>
+                      </View>
+                    ) : rosterError ? (
+                      <View style={styles.rosterErrorBox}>
+                        <Text style={styles.rosterErrorText}>{rosterError}</Text>
                         <TouchableOpacity
-                          style={styles.qrRetryButton}
-                          onPress={() => loadQrCode(activeSessionData.session.id)}
+                          style={styles.rosterRetryButton}
+                          onPress={() => loadRoster(activeSessionData.session.id, false)}
                         >
-                          <Text style={styles.qrRetryText}>Retry QR Code</Text>
+                          <Text style={styles.rosterRetryButtonText}>Retry Roster</Text>
                         </TouchableOpacity>
                       </View>
-                    ) : qrData ? (
-                      <View style={styles.qrContentBox}>
-                        <Image
-                          source={{ uri: qrData.qrDataUrl }}
-                          style={styles.qrImage}
-                          resizeMode="contain"
-                          accessibilityLabel="Classroom QR Code"
-                        />
-                        <View style={styles.qrFooterRow}>
-                          <Text style={styles.qrCodeText}>
-                            Active Code: {qrData.code.substring(0, 8)}...
+                    ) : (
+                      <View style={styles.rosterList}>
+                        {activeSessionData.roster.map((s) => {
+                          const isPresent = s.status === 'present';
+                          const isAbsent = s.status === 'absent';
+                          return (
+                            <View
+                              key={s.id}
+                              style={[
+                                styles.rosterRow,
+                                isPresent && styles.rosterRowPresent,
+                                isAbsent && styles.rosterRowAbsent,
+                              ]}
+                            >
+                              <View style={styles.rosterStudentInfo}>
+                                <Text style={styles.studentName}>{s.studentName}</Text>
+                                <Text style={styles.studentEmail}>{s.studentEmail}</Text>
+                              </View>
+                              <View
+                                style={[
+                                  styles.rosterStatusPill,
+                                  isPresent
+                                    ? styles.rosterStatusPillPresent
+                                    : isAbsent
+                                    ? styles.rosterStatusPillAbsent
+                                    : styles.rosterStatusPillPending,
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.rosterStatusText,
+                                    isPresent
+                                      ? styles.rosterStatusTextPresent
+                                      : isAbsent
+                                      ? styles.rosterStatusTextAbsent
+                                      : styles.rosterStatusTextPending,
+                                  ]}
+                                >
+                                  {isPresent ? '✓ Present' : isAbsent ? '✕ Absent' : '⏳ Pending'}
+                                </Text>
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    )}
+
+                    {!isClosed ? (
+                      <View>
+                        <View style={styles.qrCard}>
+                          <View style={styles.qrHeaderRow}>
+                            <Text style={styles.qrTitle}>Classroom Check-In QR</Text>
+                            {countdown > 0 ? (
+                              <View style={[styles.timerBadge, countdown <= 5 && styles.timerBadgeExpiring]}>
+                                <Text style={[styles.timerText, countdown <= 5 && styles.timerTextExpiring]}>
+                                  {qrLoading ? 'Refreshing...' : `Expires in ${countdown}s`}
+                                </Text>
+                              </View>
+                            ) : null}
+                          </View>
+
+                          <Text style={styles.qrSubtitle}>
+                            Scan with student mobile app to record attendance
                           </Text>
-                          <TouchableOpacity
-                            style={styles.qrRefreshButton}
-                            onPress={() => loadQrCode(activeSessionData.session.id)}
-                            disabled={qrLoading}
-                          >
-                            <Text style={styles.qrRefreshButtonText}>
-                              {qrLoading ? '...' : '↻ Refresh'}
-                            </Text>
-                          </TouchableOpacity>
+
+                          {qrLoading && !qrData ? (
+                            <View style={styles.qrPlaceholder}>
+                              <ActivityIndicator size="large" color="#16a34a" />
+                              <Text style={styles.qrLoadingText}>Generating QR code...</Text>
+                            </View>
+                          ) : qrError ? (
+                            <View style={styles.qrErrorBox}>
+                              <Text style={styles.qrErrorText}>{qrError}</Text>
+                              <TouchableOpacity
+                                style={styles.qrRetryButton}
+                                onPress={() => loadQrCode(activeSessionData.session.id)}
+                              >
+                                <Text style={styles.qrRetryText}>Retry QR Code</Text>
+                              </TouchableOpacity>
+                            </View>
+                          ) : qrData ? (
+                            <View style={styles.qrContentBox}>
+                              <Image
+                                source={{ uri: qrData.qrDataUrl }}
+                                style={styles.qrImage}
+                                resizeMode="contain"
+                                accessibilityLabel="Classroom QR Code"
+                              />
+                              <View style={styles.qrFooterRow}>
+                                <Text style={styles.qrCodeText}>
+                                  Active Code: {qrData.code.substring(0, 8)}...
+                                </Text>
+                                <TouchableOpacity
+                                  style={styles.qrRefreshButton}
+                                  onPress={() => loadQrCode(activeSessionData.session.id)}
+                                  disabled={qrLoading}
+                                >
+                                  <Text style={styles.qrRefreshButtonText}>
+                                    {qrLoading ? '...' : '↻ Refresh'}
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                            </View>
+                          ) : null}
                         </View>
+
+                        <TouchableOpacity
+                          style={[styles.closeSessionButton, closeLoading && styles.buttonDisabled]}
+                          onPress={handleCloseSession}
+                          disabled={closeLoading}
+                        >
+                          {closeLoading ? (
+                            <ActivityIndicator color="#ffffff" />
+                          ) : (
+                            <Text style={styles.closeSessionButtonText}>
+                              Close Session & Finalize Absences
+                            </Text>
+                          )}
+                        </TouchableOpacity>
+                        <Text style={styles.closeHint}>
+                          Finalizes pending students as absent and deactivates QR scanning.
+                        </Text>
                       </View>
                     ) : null}
                   </View>
-                </View>
-              ) : (
+                );
+              })() : (
                 <View>
                   {sessionError ? (
                     <View style={styles.errorBox}>
@@ -1156,5 +1243,78 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#334155',
     fontWeight: '600',
+  },
+  sessionBoxClosed: {
+    backgroundColor: '#f8fafc',
+    borderColor: '#cbd5e1',
+  },
+  statusPillClosed: {
+    backgroundColor: '#64748b',
+  },
+  sessionMetaTextClosed: {
+    color: '#475569',
+  },
+  closedBannerBox: {
+    backgroundColor: '#f1f5f9',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+  },
+  closedBannerTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#334155',
+    marginBottom: 2,
+  },
+  closedBannerSubtitle: {
+    fontSize: 12,
+    color: '#64748b',
+    lineHeight: 16,
+  },
+  absentCountPill: {
+    backgroundColor: '#fee2e2',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#fca5a5',
+  },
+  absentCountText: {
+    fontSize: 11,
+    color: '#b91c1c',
+    fontWeight: '700',
+  },
+  rosterRowAbsent: {
+    borderColor: '#fecaca',
+    backgroundColor: '#fff5f5',
+  },
+  rosterStatusPillAbsent: {
+    backgroundColor: '#fee2e2',
+    borderColor: '#fca5a5',
+    borderWidth: 1,
+  },
+  rosterStatusTextAbsent: {
+    color: '#b91c1c',
+  },
+  closeSessionButton: {
+    backgroundColor: '#b91c1c',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  closeSessionButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  closeHint: {
+    fontSize: 12,
+    color: '#64748b',
+    textAlign: 'center',
+    marginTop: 6,
+    lineHeight: 16,
   },
 });

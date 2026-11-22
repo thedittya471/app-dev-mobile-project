@@ -653,6 +653,18 @@ app.post('/attendance/check-in', requireAuth, async (req, res) => {
 
     // 5. Insert attendance record in transaction and update roster status
     const savedRecord = await db.transaction(async (tx) => {
+      // Re-verify session is still open within transaction to coordinate with closure
+      const [currentSession] = await tx
+        .select()
+        .from(attendanceSessions)
+        .where(eq(attendanceSessions.id, sessionId));
+
+      if (!currentSession || currentSession.status !== 'open') {
+        const err = new Error('Attendance session is closed');
+        err.statusCode = 400;
+        throw err;
+      }
+
       const inserted = await tx
         .insert(attendanceRecords)
         .values({
@@ -698,6 +710,146 @@ app.post('/attendance/check-in', requireAuth, async (req, res) => {
       record: savedRecord,
       message: 'Attendance check-in confirmed',
       repeated: false,
+    });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// Teacher Close action: close session and finalize absences in one atomic transaction
+app.post('/attendance/sessions/:id/close', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const sessionRows = await db
+      .select({
+        session: attendanceSessions,
+        period: periods,
+      })
+      .from(attendanceSessions)
+      .innerJoin(periods, eq(attendanceSessions.periodId, periods.id))
+      .where(eq(attendanceSessions.id, id));
+
+    if (!sessionRows.length) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const { session, period } = sessionRows[0];
+
+    // Only assigned teacher can close
+    if (req.user.role !== 'teacher' || period.teacherId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied: only assigned teacher can close attendance session' });
+    }
+
+    // Repeated close requests safe (idempotent)
+    if (session.status === 'closed') {
+      const roster = await db
+        .select()
+        .from(sessionRosters)
+        .where(eq(sessionRosters.sessionId, session.id))
+        .orderBy(asc(sessionRosters.studentName));
+
+      const checkedInCount = roster.filter((s) => s.status === 'present').length;
+      const absentCount = roster.filter((s) => s.status === 'absent').length;
+
+      return res.status(200).json({
+        session,
+        roster,
+        summary: {
+          totalEnrolled: roster.length,
+          checkedInCount,
+          absentCount,
+          percentage: roster.length ? Math.round((checkedInCount / roster.length) * 100) : 0,
+        },
+        message: 'Attendance session is already closed',
+      });
+    }
+
+    const now = new Date();
+
+    // Close session and finalize pending students as absent in one atomic transaction
+    const result = await db.transaction(async (tx) => {
+      // 1. Close session
+      const [closedSession] = await tx
+        .update(attendanceSessions)
+        .set({
+          status: 'closed',
+          closedAt: now,
+        })
+        .where(eq(attendanceSessions.id, session.id))
+        .returning();
+
+      // 2. Expire all attendance codes for this session
+      await tx
+        .update(attendanceCodes)
+        .set({ expiresAt: now })
+        .where(eq(attendanceCodes.sessionId, session.id));
+
+      // 3. Find pending roster entries
+      const pendingStudents = await tx
+        .select()
+        .from(sessionRosters)
+        .where(
+          and(
+            eq(sessionRosters.sessionId, session.id),
+            eq(sessionRosters.status, 'pending')
+          )
+        );
+
+      // 4. Finalize pending students as absent in attendanceRecords
+      if (pendingStudents.length > 0) {
+        await tx
+          .insert(attendanceRecords)
+          .values(
+            pendingStudents.map((s) => ({
+              sessionId: session.id,
+              studentId: s.studentId,
+              status: 'absent',
+              recordedAt: now,
+              method: 'finalized_absence',
+            }))
+          )
+          .onConflictDoNothing();
+
+        // 5. Update roster entries status to absent
+        await tx
+          .update(sessionRosters)
+          .set({ status: 'absent' })
+          .where(
+            and(
+              eq(sessionRosters.sessionId, session.id),
+              eq(sessionRosters.status, 'pending')
+            )
+          );
+      }
+
+      // 6. Return finalized roster
+      const finalizedRoster = await tx
+        .select()
+        .from(sessionRosters)
+        .where(eq(sessionRosters.sessionId, session.id))
+        .orderBy(asc(sessionRosters.studentName));
+
+      const checkedInCount = finalizedRoster.filter((s) => s.status === 'present').length;
+      const absentCount = finalizedRoster.filter((s) => s.status === 'absent').length;
+
+      return {
+        session: closedSession,
+        roster: finalizedRoster,
+        summary: {
+          totalEnrolled: finalizedRoster.length,
+          checkedInCount,
+          absentCount,
+          percentage: finalizedRoster.length ? Math.round((checkedInCount / finalizedRoster.length) * 100) : 0,
+        },
+      };
+    });
+
+    res.status(200).json({
+      session: result.session,
+      roster: result.roster,
+      summary: result.summary,
+      message: 'Attendance session closed and absences finalized successfully',
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
