@@ -128,6 +128,7 @@ export const attendanceRecords = pgTable(
     status: varchar('status', { length: 20 }).notNull().default('present'),
     recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow().notNull(),
     method: varchar('method', { length: 50 }).notNull().default('qr_scan'),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

@@ -14,6 +14,7 @@ import {
   getSessionQrCode,
   getAttendanceSession,
   closeAttendanceSession,
+  updateAttendanceRecord,
 } from '../services/attendance';
 
 export default function TeacherDashboard({ user, onSignOut }) {
@@ -29,9 +30,11 @@ export default function TeacherDashboard({ user, onSignOut }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(false);
   const [closeLoading, setCloseLoading] = useState(false);
+  const [updatingStudentId, setUpdatingStudentId] = useState(null);
   const [error, setError] = useState(null);
   const [detailError, setDetailError] = useState(null);
   const [sessionError, setSessionError] = useState(null);
+  const [rowError, setRowError] = useState(null);
   const [qrData, setQrData] = useState(null);
   const [qrLoading, setQrLoading] = useState(false);
   const [qrError, setQrError] = useState(null);
@@ -200,6 +203,28 @@ export default function TeacherDashboard({ user, onSignOut }) {
     }
   }
 
+  async function handleToggleStudentStatus(studentId, currentStatus) {
+    if (!activeSessionData?.session?.id) return;
+    const targetStatus = currentStatus === 'present' ? 'absent' : 'present';
+    setUpdatingStudentId(studentId);
+    setRowError(null);
+    try {
+      const result = await updateAttendanceRecord(activeSessionData.session.id, {
+        studentId,
+        status: targetStatus,
+      });
+      setActiveSessionData((prev) => ({
+        ...prev,
+        roster: result.roster,
+        summary: result.summary,
+      }));
+    } catch (err) {
+      setRowError(err.message || 'Failed to update student attendance');
+    } finally {
+      setUpdatingStudentId(null);
+    }
+  }
+
   function handleBackToTimetable() {
     setSelectedPeriod(null);
     setActiveSessionData(null);
@@ -207,6 +232,8 @@ export default function TeacherDashboard({ user, onSignOut }) {
     setQrError(null);
     setCountdown(0);
     setRosterError(null);
+    setRowError(null);
+    setUpdatingStudentId(null);
     setDetailError(null);
     setSessionError(null);
     loadSchedule(selectedDate);
@@ -347,6 +374,12 @@ export default function TeacherDashboard({ user, onSignOut }) {
                       )}
                     </View>
 
+                    {rowError ? (
+                      <View style={styles.rosterErrorBox}>
+                        <Text style={styles.rosterErrorText}>{rowError}</Text>
+                      </View>
+                    ) : null}
+
                     {rosterLoading ? (
                       <View style={styles.rosterLoadingBox}>
                         <ActivityIndicator size="small" color="#166534" />
@@ -367,6 +400,7 @@ export default function TeacherDashboard({ user, onSignOut }) {
                         {activeSessionData.roster.map((s) => {
                           const isPresent = s.status === 'present';
                           const isAbsent = s.status === 'absent';
+                          const isUpdating = updatingStudentId === s.studentId;
                           return (
                             <View
                               key={s.id}
@@ -380,28 +414,48 @@ export default function TeacherDashboard({ user, onSignOut }) {
                                 <Text style={styles.studentName}>{s.studentName}</Text>
                                 <Text style={styles.studentEmail}>{s.studentEmail}</Text>
                               </View>
-                              <View
-                                style={[
-                                  styles.rosterStatusPill,
-                                  isPresent
-                                    ? styles.rosterStatusPillPresent
-                                    : isAbsent
-                                    ? styles.rosterStatusPillAbsent
-                                    : styles.rosterStatusPillPending,
-                                ]}
-                              >
-                                <Text
+                              <View style={styles.rosterActionCol}>
+                                <View
                                   style={[
-                                    styles.rosterStatusText,
+                                    styles.rosterStatusPill,
                                     isPresent
-                                      ? styles.rosterStatusTextPresent
+                                      ? styles.rosterStatusPillPresent
                                       : isAbsent
-                                      ? styles.rosterStatusTextAbsent
-                                      : styles.rosterStatusTextPending,
+                                      ? styles.rosterStatusPillAbsent
+                                      : styles.rosterStatusPillPending,
                                   ]}
                                 >
-                                  {isPresent ? '✓ Present' : isAbsent ? '✕ Absent' : '⏳ Pending'}
-                                </Text>
+                                  <Text
+                                    style={[
+                                      styles.rosterStatusText,
+                                      isPresent
+                                        ? styles.rosterStatusTextPresent
+                                        : isAbsent
+                                        ? styles.rosterStatusTextAbsent
+                                        : styles.rosterStatusTextPending,
+                                    ]}
+                                  >
+                                    {isPresent ? '✓ Present' : isAbsent ? '✕ Absent' : '⏳ Pending'}
+                                  </Text>
+                                </View>
+
+                                <TouchableOpacity
+                                  style={[
+                                    styles.correctButton,
+                                    isPresent ? styles.correctButtonAbsent : styles.correctButtonPresent,
+                                    isUpdating && styles.buttonDisabled,
+                                  ]}
+                                  onPress={() => handleToggleStudentStatus(s.studentId, s.status)}
+                                  disabled={isUpdating}
+                                >
+                                  {isUpdating ? (
+                                    <ActivityIndicator size="small" color="#ffffff" />
+                                  ) : (
+                                    <Text style={styles.correctButtonText}>
+                                      {isPresent ? 'Mark Absent' : 'Mark Present'}
+                                    </Text>
+                                  )}
+                                </TouchableOpacity>
                               </View>
                             </View>
                           );
@@ -1095,6 +1149,26 @@ const styles = StyleSheet.create({
   },
   rosterStudentInfo: {
     flex: 1,
+  },
+  rosterActionCol: {
+    alignItems: 'flex-end',
+    gap: 6,
+  },
+  correctButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  correctButtonPresent: {
+    backgroundColor: '#16a34a',
+  },
+  correctButtonAbsent: {
+    backgroundColor: '#dc2626',
+  },
+  correctButtonText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
   },
   studentName: {
     fontSize: 13,

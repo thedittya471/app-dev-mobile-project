@@ -855,3 +855,147 @@ app.post('/attendance/sessions/:id/close', requireAuth, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Teacher action to record or correct a student's attendance record
+app.post('/attendance/sessions/:id/records', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { studentId, status } = req.body || {};
+
+    if (!studentId || !status) {
+      return res.status(400).json({ error: 'studentId and status are required' });
+    }
+
+    if (!['present', 'absent', 'pending'].includes(status)) {
+      return res.status(400).json({ error: 'status must be present, absent, or pending' });
+    }
+
+    const sessionRows = await db
+      .select({
+        session: attendanceSessions,
+        period: periods,
+      })
+      .from(attendanceSessions)
+      .innerJoin(periods, eq(attendanceSessions.periodId, periods.id))
+      .where(eq(attendanceSessions.id, id));
+
+    if (!sessionRows.length) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const { session, period } = sessionRows[0];
+
+    // Authorization: only the assigned teacher can modify attendance
+    if (req.user.role !== 'teacher' || period.teacherId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied: only assigned teacher can modify attendance records' });
+    }
+
+    // Verify student is in the captured session roster
+    const rosterRows = await db
+      .select()
+      .from(sessionRosters)
+      .where(
+        and(
+          eq(sessionRosters.sessionId, session.id),
+          eq(sessionRosters.studentId, studentId)
+        )
+      );
+
+    if (!rosterRows.length) {
+      return res.status(403).json({ error: 'Student is not in the captured session roster' });
+    }
+
+    const now = new Date();
+    const method = session.status === 'open' ? 'teacher_manual' : 'teacher_correction';
+
+    const result = await db.transaction(async (tx) => {
+      // 1. Update sessionRoster status
+      await tx
+        .update(sessionRosters)
+        .set({ status })
+        .where(
+          and(
+            eq(sessionRosters.sessionId, session.id),
+            eq(sessionRosters.studentId, studentId)
+          )
+        );
+
+      // 2. Check if attendanceRecord exists
+      const existingRecords = await tx
+        .select()
+        .from(attendanceRecords)
+        .where(
+          and(
+            eq(attendanceRecords.sessionId, session.id),
+            eq(attendanceRecords.studentId, studentId)
+          )
+        );
+
+      let record;
+      if (existingRecords.length > 0) {
+        const [updated] = await tx
+          .update(attendanceRecords)
+          .set({
+            status,
+            method,
+            updatedBy: req.user.id,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(attendanceRecords.sessionId, session.id),
+              eq(attendanceRecords.studentId, studentId)
+            )
+          )
+          .returning();
+        record = updated;
+      } else {
+        const [inserted] = await tx
+          .insert(attendanceRecords)
+          .values({
+            sessionId: session.id,
+            studentId,
+            status,
+            method,
+            updatedBy: req.user.id,
+            recordedAt: now,
+            updatedAt: now,
+          })
+          .returning();
+        record = inserted;
+      }
+
+      // 3. Return fresh roster and summary
+      const roster = await tx
+        .select()
+        .from(sessionRosters)
+        .where(eq(sessionRosters.sessionId, session.id))
+        .orderBy(asc(sessionRosters.studentName));
+
+      const checkedInCount = roster.filter((s) => s.status === 'present').length;
+      const absentCount = roster.filter((s) => s.status === 'absent').length;
+      const pendingCount = roster.filter((s) => s.status === 'pending').length;
+
+      return {
+        record,
+        roster,
+        summary: {
+          totalEnrolled: roster.length,
+          checkedInCount,
+          absentCount,
+          pendingCount,
+          percentage: roster.length ? Math.round((checkedInCount / roster.length) * 100) : 0,
+        },
+      };
+    });
+
+    res.status(200).json({
+      record: result.record,
+      roster: result.roster,
+      summary: result.summary,
+      message: 'Attendance record updated successfully',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
