@@ -12,6 +12,7 @@ import {
   attendanceSessions,
   sessionRosters,
   attendanceCodes,
+  attendanceRecords,
 } from './db/schema.js';
 import {
   verifyPassword,
@@ -511,6 +512,158 @@ app.get('/attendance/sessions/:id/code', requireAuth, async (req, res) => {
       expiresAt: activeCode.expiresAt,
       expiresInSeconds,
       serverTime: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Student check-in endpoint
+app.post('/attendance/check-in', requireAuth, async (req, res) => {
+  try {
+    // Only student accounts can check in
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ error: 'Only students can check in' });
+    }
+
+    let { sessionId, code, qrPayload } = req.body || {};
+
+    if (qrPayload && (!sessionId || !code)) {
+      try {
+        const parsed = typeof qrPayload === 'string' ? JSON.parse(qrPayload) : qrPayload;
+        sessionId = sessionId || parsed.sessionId;
+        code = code || parsed.code;
+      } catch {
+        return res.status(400).json({ error: 'Malformed QR payload' });
+      }
+    }
+
+    if (!sessionId || !code) {
+      return res.status(400).json({ error: 'sessionId and code are required' });
+    }
+
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_REGEX.test(sessionId)) {
+      return res.status(400).json({ error: 'Invalid sessionId format' });
+    }
+
+    // 1. Verify session exists and is open
+    const sessionRows = await db
+      .select()
+      .from(attendanceSessions)
+      .where(eq(attendanceSessions.id, sessionId));
+
+    if (!sessionRows.length) {
+      return res.status(404).json({ error: 'Attendance session not found' });
+    }
+
+    const session = sessionRows[0];
+    if (session.status !== 'open') {
+      return res.status(400).json({ error: 'Attendance session is closed' });
+    }
+
+    // 2. Validate attendance code
+    const codeRows = await db
+      .select()
+      .from(attendanceCodes)
+      .where(eq(attendanceCodes.code, code));
+
+    if (!codeRows.length) {
+      return res.status(400).json({ error: 'Invalid attendance code' });
+    }
+
+    const codeRecord = codeRows[0];
+    if (codeRecord.sessionId !== sessionId) {
+      return res.status(400).json({ error: 'Attendance code does not match this session' });
+    }
+
+    const now = new Date();
+    if (new Date(codeRecord.expiresAt) <= now) {
+      return res.status(400).json({ error: 'Attendance code has expired' });
+    }
+
+    // 3. Verify student roster membership (from trusted auth context)
+    const studentId = req.user.id;
+    const rosterRows = await db
+      .select()
+      .from(sessionRosters)
+      .where(
+        and(
+          eq(sessionRosters.sessionId, sessionId),
+          eq(sessionRosters.studentId, studentId)
+        )
+      );
+
+    if (!rosterRows.length) {
+      return res.status(403).json({ error: 'Student is not enrolled in this session roster' });
+    }
+
+    // 4. Check for existing record (repeat submission / concurrent repeat)
+    const existingRecords = await db
+      .select()
+      .from(attendanceRecords)
+      .where(
+        and(
+          eq(attendanceRecords.sessionId, sessionId),
+          eq(attendanceRecords.studentId, studentId)
+        )
+      );
+
+    if (existingRecords.length > 0) {
+      return res.status(200).json({
+        record: existingRecords[0],
+        message: 'Attendance already recorded',
+        repeated: true,
+      });
+    }
+
+    // 5. Insert attendance record in transaction and update roster status
+    const savedRecord = await db.transaction(async (tx) => {
+      const inserted = await tx
+        .insert(attendanceRecords)
+        .values({
+          sessionId,
+          studentId,
+          status: 'present',
+          recordedAt: now,
+          method: 'qr_scan',
+        })
+        .onConflictDoNothing()
+        .returning();
+
+      let record;
+      if (inserted.length > 0) {
+        record = inserted[0];
+      } else {
+        const [found] = await tx
+          .select()
+          .from(attendanceRecords)
+          .where(
+            and(
+              eq(attendanceRecords.sessionId, sessionId),
+              eq(attendanceRecords.studentId, studentId)
+            )
+          );
+        record = found;
+      }
+
+      await tx
+        .update(sessionRosters)
+        .set({ status: 'present' })
+        .where(
+          and(
+            eq(sessionRosters.sessionId, sessionId),
+            eq(sessionRosters.studentId, studentId)
+          )
+        );
+
+      return record;
+    });
+
+    res.status(201).json({
+      record: savedRecord,
+      message: 'Attendance check-in confirmed',
+      repeated: false,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

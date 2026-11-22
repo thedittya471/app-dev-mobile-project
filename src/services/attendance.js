@@ -53,3 +53,24 @@ export async function getSessionQrCode(sessionId) {
 
   return data;
 }
+
+export async function submitCheckIn(payload) {
+  const token = await getToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const res = await fetch(`${API_BASE_URL}/attendance/check-in`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to submit check-in');
+  }
+
+  return data;
+}
