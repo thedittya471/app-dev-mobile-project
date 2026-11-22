@@ -21,6 +21,7 @@ import {
   deleteSession,
   requireAuth,
 } from './auth.js';
+import { computeFreePeriods } from './freePeriods.js';
 
 export const app = express();
 
@@ -181,6 +182,8 @@ app.get('/schedule', requireAuth, async (req, res) => {
 
     const institutionTimezone = results[0]?.timezone || 'America/New_York';
     const institutionToday = getDateInTimezone(new Date(), institutionTimezone);
+    const schoolDayStart = results[0]?.schoolDayStart || '09:00';
+    const schoolDayEnd = results[0]?.schoolDayEnd || '17:00';
 
     let mapped = results.map((p) => {
       const periodTimezone = p.timezone || institutionTimezone;
@@ -189,6 +192,7 @@ app.get('/schedule', requireAuth, async (req, res) => {
       const endFormatted = formatTimeInTimezone(p.endTime, periodTimezone);
       return {
         ...p,
+        type: 'class',
         periodDate,
         formattedTime: `${startFormatted} - ${endFormatted}`,
         startTimeFormatted: startFormatted,
@@ -196,15 +200,36 @@ app.get('/schedule', requireAuth, async (req, res) => {
       };
     });
 
+    const targetDate = filterDate
+      ? filterDate === 'today'
+        ? institutionToday
+        : filterDate
+      : institutionToday;
+
     if (filterDate) {
-      const targetDate = filterDate === 'today' ? institutionToday : filterDate;
       mapped = mapped.filter((p) => p.periodDate === targetDate);
     }
 
+    const freePeriods = computeFreePeriods({
+      classes: mapped,
+      schoolDayStart,
+      schoolDayEnd,
+      timezone: institutionTimezone,
+      dateStr: targetDate,
+    });
+
+    const timeline = [...mapped, ...freePeriods].sort(
+      (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
+    );
+
     res.status(200).json({
       schedule: mapped,
+      freePeriods,
+      timeline,
       institutionDate: institutionToday,
       institutionTimezone,
+      schoolDayStart,
+      schoolDayEnd,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

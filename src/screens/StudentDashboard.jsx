@@ -811,25 +811,41 @@ export default function StudentDashboard({ user, onSignOut }) {
               </View>
             ) : (
               <View style={styles.classList}>
-                {scheduleData.schedule.map((item, index) => (
-                  <TouchableOpacity
-                    key={item.id}
-                    style={styles.classItem}
-                    onPress={() => handleOpenPeriod(item.id)}
-                  >
-                    <View style={styles.classIndex}>
-                      <Text style={styles.classIndexText}>{index + 1}</Text>
-                    </View>
-                    <View style={styles.classDetails}>
-                      <Text style={styles.classSubject}>{item.subject}</Text>
-                      <Text style={styles.classTime}>{item.formattedTime}</Text>
-                      <Text style={styles.classMeta}>
-                        {item.teacherName} • {item.sectionName}
-                      </Text>
-                    </View>
-                    <Text style={styles.arrowText}>{"→"}</Text>
-                  </TouchableOpacity>
-                ))}
+                {(scheduleData.timeline || scheduleData.schedule).map((item, index) => {
+                  if (item.type === 'free') {
+                    return (
+                      <View key={item.id || `free-${index}`} style={styles.freePeriodCard}>
+                        <View style={styles.freePeriodBadge}>
+                          <Text style={styles.freePeriodBadgeText}>⏳ FREE PERIOD</Text>
+                          <Text style={styles.freePeriodDurationText}>{item.durationFormatted}</Text>
+                        </View>
+                        <Text style={styles.freePeriodTime}>{item.formattedTime}</Text>
+                        <Text style={styles.freePeriodMeta}>
+                          {item.durationMinutes} min open window within school hours
+                        </Text>
+                      </View>
+                    );
+                  }
+                  return (
+                    <TouchableOpacity
+                      key={item.id}
+                      style={styles.classItem}
+                      onPress={() => handleOpenPeriod(item.id)}
+                    >
+                      <View style={styles.classIndex}>
+                        <Text style={styles.classIndexText}>{index + 1}</Text>
+                      </View>
+                      <View style={styles.classDetails}>
+                        <Text style={styles.classSubject}>{item.subject}</Text>
+                        <Text style={styles.classTime}>{item.formattedTime}</Text>
+                        <Text style={styles.classMeta}>
+                          {item.teacherName} • {item.sectionName}
+                        </Text>
+                      </View>
+                      <Text style={styles.arrowText}>{"→"}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             )}
           </View>
@@ -1025,6 +1041,45 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#e2e8f0',
+  },
+  freePeriodCard: {
+    padding: 12,
+    backgroundColor: '#f8fafc',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderStyle: 'dashed',
+  },
+  freePeriodBadge: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  freePeriodBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#0369a1',
+    letterSpacing: 0.5,
+  },
+  freePeriodDurationText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284c7',
+    backgroundColor: '#e0f2fe',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  freePeriodTime: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginBottom: 2,
+  },
+  freePeriodMeta: {
+    fontSize: 12,
+    color: '#64748b',
   },
   classIndex: {
     width: 28,
