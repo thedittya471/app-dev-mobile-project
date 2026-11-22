@@ -17,7 +17,7 @@ import {
   updateAttendanceRecord,
 } from '../services/attendance';
 
-export default function TeacherDashboard({ user, onSignOut }) {
+export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
   const [scheduleData, setScheduleData] = useState({
     schedule: [],
     institutionDate: '',
@@ -306,6 +306,17 @@ export default function TeacherDashboard({ user, onSignOut }) {
                           : `Opened: ${new Date(activeSessionData.session.openedAt).toLocaleTimeString()}`}
                       </Text>
                     </View>
+
+                    {onOpenProjector ? (
+                      <TouchableOpacity
+                        style={styles.projectorLaunchButton}
+                        onPress={() => onOpenProjector(activeSessionData.session.id)}
+                      >
+                        <Text style={styles.projectorLaunchButtonText}>
+                          📽️ Open Projector View (Classroom Display)
+                        </Text>
+                      </TouchableOpacity>
+                    ) : null}
 
                     {isClosed ? (
                       <View style={styles.closedBannerBox}>
@@ -1390,5 +1401,20 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 6,
     lineHeight: 16,
+  },
+  projectorLaunchButton: {
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#93c5fd',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  projectorLaunchButtonText: {
+    color: '#1d4ed8',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

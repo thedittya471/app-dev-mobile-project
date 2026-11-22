@@ -552,6 +552,143 @@ app.get('/attendance/sessions/:id/code', requireAuth, async (req, res) => {
   }
 });
 
+// Classroom projector summary endpoint (omits individual attendance)
+app.get('/attendance/sessions/:id/summary', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const sessionRows = await db
+      .select({
+        session: attendanceSessions,
+        period: periods,
+        section: sections,
+        teacher: users,
+      })
+      .from(attendanceSessions)
+      .innerJoin(periods, eq(attendanceSessions.periodId, periods.id))
+      .innerJoin(sections, eq(periods.sectionId, sections.id))
+      .innerJoin(users, eq(periods.teacherId, users.id))
+      .where(eq(attendanceSessions.id, id));
+
+    if (!sessionRows.length) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const { session, period, section, teacher } = sessionRows[0];
+
+    // Authorization: only assigned teacher can view classroom projector
+    if (req.user.role !== 'teacher' || period.teacherId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied: only assigned teacher can view classroom projector summary' });
+    }
+
+    // Retrieve aggregate counts only (strictly omits individual student attendance)
+    const rosterRows = await db
+      .select({
+        status: sessionRosters.status,
+      })
+      .from(sessionRosters)
+      .where(eq(sessionRosters.sessionId, session.id));
+
+    const totalEnrolled = rosterRows.length;
+    const checkedInCount = rosterRows.filter((r) => r.status === 'present').length;
+    const absentCount = rosterRows.filter((r) => r.status === 'absent').length;
+    const pendingCount = rosterRows.filter((r) => r.status === 'pending').length;
+    const percentage = totalEnrolled ? Math.round((checkedInCount / totalEnrolled) * 100) : 0;
+
+    let qr = null;
+
+    if (session.status === 'open') {
+      const now = new Date();
+      const activeCodes = await db
+        .select()
+        .from(attendanceCodes)
+        .where(
+          and(
+            eq(attendanceCodes.sessionId, session.id),
+            gt(attendanceCodes.expiresAt, now)
+          )
+        )
+        .orderBy(desc(attendanceCodes.expiresAt))
+        .limit(1);
+
+      let activeCode;
+      if (activeCodes.length > 0) {
+        activeCode = activeCodes[0];
+      } else {
+        const code = crypto.randomBytes(16).toString('hex');
+        const expiresAt = new Date(now.getTime() + QR_CODE_TTL_SECONDS * 1000);
+        const [newCode] = await db
+          .insert(attendanceCodes)
+          .values({
+            sessionId: session.id,
+            code,
+            expiresAt,
+            createdAt: now,
+          })
+          .returning();
+        activeCode = newCode;
+      }
+
+      const qrPayload = JSON.stringify({
+        sessionId: session.id,
+        code: activeCode.code,
+      });
+
+      const qrDataUrl = await QRCode.toDataURL(qrPayload, {
+        width: 380,
+        margin: 2,
+        errorCorrectionLevel: 'M',
+      });
+
+      const expiresInSeconds = Math.max(
+        0,
+        Math.round((new Date(activeCode.expiresAt).getTime() - Date.now()) / 1000)
+      );
+
+      qr = {
+        code: activeCode.code,
+        qrPayload,
+        qrDataUrl,
+        expiresAt: activeCode.expiresAt,
+        expiresInSeconds,
+      };
+    }
+
+    const tz = section.timezone || 'America/New_York';
+
+    res.status(200).json({
+      session: {
+        id: session.id,
+        periodId: session.periodId,
+        status: session.status,
+        openedAt: session.openedAt,
+        closedAt: session.closedAt,
+      },
+      period: {
+        id: period.id,
+        subject: period.subject,
+        sectionName: section.name,
+        teacherName: teacher.name,
+        date: getDateInTimezone(period.startTime, tz),
+        formattedTime: `${formatTimeInTimezone(period.startTime, tz)} - ${formatTimeInTimezone(period.endTime, tz)}`,
+        startTime: period.startTime,
+        endTime: period.endTime,
+        timezone: tz,
+      },
+      summary: {
+        totalEnrolled,
+        checkedInCount,
+        absentCount,
+        pendingCount,
+        percentage,
+      },
+      qr,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Student check-in endpoint
 app.post('/attendance/check-in', requireAuth, async (req, res) => {
   try {

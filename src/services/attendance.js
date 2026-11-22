@@ -135,3 +135,21 @@ export async function getStudentAttendance() {
 
   return data;
 }
+
+export async function getSessionSummary(sessionId) {
+  const token = await getToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const res = await fetch(`${API_BASE_URL}/attendance/sessions/${encodeURIComponent(sessionId)}/summary`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    const error = new Error(data.error || 'Failed to fetch session summary');
+    error.status = res.status;
+    throw error;
+  }
+
+  return data;
+}
