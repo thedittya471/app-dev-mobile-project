@@ -7,6 +7,7 @@ import {
   timestamp,
   unique,
   check,
+  jsonb,
 } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
@@ -134,5 +135,23 @@ export const attendanceRecords = pgTable(
   },
   (table) => [
     unique('attendance_record_session_student_unique').on(table.sessionId, table.studentId),
+  ]
+);
+
+export const studentProfiles = pgTable(
+  'student_profiles',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    studentId: uuid('student_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    careerGoal: varchar('career_goal', { length: 255 }).default(''),
+    interests: jsonb('interests').$type().default([]).notNull(),
+    strengths: jsonb('strengths').$type().default([]).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique('student_profile_student_unique').on(table.studentId),
   ]
 );

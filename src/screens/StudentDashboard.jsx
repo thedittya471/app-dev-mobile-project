@@ -6,9 +6,11 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   ScrollView,
+  TextInput,
 } from 'react-native';
 import { getSchedule, getPeriodById } from '../services/schedule';
 import { getStudentAttendance } from '../services/attendance';
+import { getStudentPreferences, saveStudentPreferences } from '../services/preferences';
 import StudentScanScreen from './StudentScanScreen';
 
 export default function StudentDashboard({ user, onSignOut }) {
@@ -59,6 +61,31 @@ export default function StudentDashboard({ user, onSignOut }) {
     }
   }, []);
 
+  const [careerGoal, setCareerGoal] = useState('');
+  const [interests, setInterests] = useState([]);
+  const [strengths, setStrengths] = useState([]);
+  const [interestInput, setInterestInput] = useState('');
+  const [strengthInput, setStrengthInput] = useState('');
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState(null);
+  const [saveStatus, setSaveStatus] = useState(null);
+
+  const loadPreferences = useCallback(async () => {
+    setProfileLoading(true);
+    setProfileError(null);
+    try {
+      const data = await getStudentPreferences();
+      setCareerGoal(data.careerGoal || '');
+      setInterests(Array.isArray(data.interests) ? data.interests : []);
+      setStrengths(Array.isArray(data.strengths) ? data.strengths : []);
+    } catch (err) {
+      setProfileError(err.message || 'Failed to load planning preferences');
+    } finally {
+      setProfileLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadSchedule(selectedDate);
   }, [loadSchedule, selectedDate]);
@@ -68,6 +95,100 @@ export default function StudentDashboard({ user, onSignOut }) {
       loadAttendance();
     }
   }, [currentView, loadAttendance]);
+
+  useEffect(() => {
+    if (currentView === 'profile') {
+      loadPreferences();
+    }
+  }, [currentView, loadPreferences]);
+
+  function handleAddInterestTag(rawTag) {
+    const tag = String(rawTag || interestInput).trim().toLowerCase();
+    if (tag && !interests.includes(tag)) {
+      setInterests((prev) => [...prev, tag]);
+    }
+    setInterestInput('');
+    setSaveStatus(null);
+  }
+
+  function handleRemoveInterestTag(tagToRemove) {
+    setInterests((prev) => prev.filter((t) => t !== tagToRemove));
+    setSaveStatus(null);
+  }
+
+  function handleAddStrengthTag(rawTag) {
+    const tag = String(rawTag || strengthInput).trim().toLowerCase();
+    if (tag && !strengths.includes(tag)) {
+      setStrengths((prev) => [...prev, tag]);
+    }
+    setStrengthInput('');
+    setSaveStatus(null);
+  }
+
+  function handleRemoveStrengthTag(tagToRemove) {
+    setStrengths((prev) => prev.filter((t) => t !== tagToRemove));
+    setSaveStatus(null);
+  }
+
+  async function handleSavePreferences() {
+    setProfileSaving(true);
+    setSaveStatus(null);
+    setProfileError(null);
+
+    let currentInterests = [...interests];
+    if (interestInput.trim()) {
+      const pending = interestInput.trim().toLowerCase();
+      if (!currentInterests.includes(pending)) currentInterests.push(pending);
+      setInterestInput('');
+    }
+
+    let currentStrengths = [...strengths];
+    if (strengthInput.trim()) {
+      const pending = strengthInput.trim().toLowerCase();
+      if (!currentStrengths.includes(pending)) currentStrengths.push(pending);
+      setStrengthInput('');
+    }
+
+    try {
+      const res = await saveStudentPreferences({
+        careerGoal,
+        interests: currentInterests,
+        strengths: currentStrengths,
+      });
+      setCareerGoal(res.profile.careerGoal || '');
+      setInterests(res.profile.interests || []);
+      setStrengths(res.profile.strengths || []);
+      setSaveStatus({ type: 'success', message: '✓ Preferences saved successfully!' });
+    } catch (err) {
+      setSaveStatus({ type: 'error', message: err.message || 'Failed to save preferences' });
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
+  async function handleClearPreferences() {
+    setProfileSaving(true);
+    setSaveStatus(null);
+    setProfileError(null);
+    setInterestInput('');
+    setStrengthInput('');
+
+    try {
+      await saveStudentPreferences({
+        careerGoal: '',
+        interests: [],
+        strengths: [],
+      });
+      setCareerGoal('');
+      setInterests([]);
+      setStrengths([]);
+      setSaveStatus({ type: 'success', message: '✓ Preferences cleared and saved.' });
+    } catch (err) {
+      setSaveStatus({ type: 'error', message: err.message || 'Failed to clear preferences' });
+    } finally {
+      setProfileSaving(false);
+    }
+  }
 
   async function handleOpenPeriod(periodId) {
     setDetailLoading(true);
@@ -141,6 +262,19 @@ export default function StudentDashboard({ user, onSignOut }) {
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
+            style={[styles.portalTab, currentView === 'profile' && styles.portalTabActive]}
+            onPress={() => setCurrentView('profile')}
+          >
+            <Text
+              style={[
+                styles.portalTabText,
+                currentView === 'profile' && styles.portalTabTextActive,
+              ]}
+            >
+              🎯 Profile
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
             style={[styles.portalTab, currentView === 'scan' && styles.portalTabActive]}
             onPress={() => setCurrentView('scan')}
           >
@@ -152,7 +286,236 @@ export default function StudentDashboard({ user, onSignOut }) {
           </TouchableOpacity>
         </View>
 
-        {currentView === 'attendance' ? (
+        {currentView === 'profile' ? (
+          <View style={styles.profileContainer}>
+            <View style={styles.profileHeaderRow}>
+              <Text style={styles.sectionTitle}>Planning Preferences</Text>
+              <TouchableOpacity
+                style={styles.profileRefreshBtn}
+                onPress={loadPreferences}
+                disabled={profileLoading || profileSaving}
+              >
+                <Text style={styles.profileRefreshText}>
+                  {profileLoading ? '...' : '↻ Reload'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.profileSubtitle}>
+              Customize your career goal, topic interests, and strengths to rank and suggest daily free-period activities.
+            </Text>
+
+            {profileLoading && !careerGoal && interests.length === 0 && strengths.length === 0 ? (
+              <View style={styles.stateBox}>
+                <ActivityIndicator size="small" color="#2563eb" />
+                <Text style={styles.stateText}>Loading planning preferences...</Text>
+              </View>
+            ) : profileError ? (
+              <View style={[styles.stateBox, styles.errorBox]}>
+                <Text style={styles.errorText}>{profileError}</Text>
+                <TouchableOpacity style={styles.retryButton} onPress={loadPreferences}>
+                  <Text style={styles.retryButtonText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.formContainer}>
+                {saveStatus ? (
+                  <View
+                    style={[
+                      styles.feedbackBanner,
+                      saveStatus.type === 'success' ? styles.feedbackSuccess : styles.feedbackError,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.feedbackText,
+                        saveStatus.type === 'success'
+                          ? styles.feedbackTextSuccess
+                          : styles.feedbackTextError,
+                      ]}
+                    >
+                      {saveStatus.message}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {/* 1. Career Goal */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Career Goal (Optional)</Text>
+                  <Text style={styles.inputHint}>e.g. Software Development, Robotics, Medicine</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    value={careerGoal}
+                    onChangeText={(text) => {
+                      setCareerGoal(text);
+                      setSaveStatus(null);
+                    }}
+                    placeholder="e.g. Software Development"
+                    placeholderTextColor="#94a3b8"
+                    editable={!profileSaving}
+                  />
+                </View>
+
+                {/* 2. Interests */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Interests & Topics (Optional)</Text>
+                  <Text style={styles.inputHint}>Tags matching areas you enjoy exploring</Text>
+                  <View style={styles.tagInputRow}>
+                    <TextInput
+                      style={[styles.textInput, styles.tagTextInput]}
+                      value={interestInput}
+                      onChangeText={setInterestInput}
+                      onSubmitEditing={() => handleAddInterestTag()}
+                      placeholder="Type an interest tag..."
+                      placeholderTextColor="#94a3b8"
+                      editable={!profileSaving}
+                    />
+                    <TouchableOpacity
+                      style={styles.addTagButton}
+                      onPress={() => handleAddInterestTag()}
+                      disabled={!interestInput.trim() || profileSaving}
+                    >
+                      <Text style={styles.addTagButtonText}>+ Add</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Active Interest Chips */}
+                  <View style={styles.tagsContainer}>
+                    {interests.map((tag) => (
+                      <View key={tag} style={styles.tagChip}>
+                        <Text style={styles.tagChipText}>{tag}</Text>
+                        <TouchableOpacity
+                          onPress={() => handleRemoveInterestTag(tag)}
+                          style={styles.removeTagBtn}
+                          disabled={profileSaving}
+                        >
+                          <Text style={styles.removeTagText}>✕</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+
+                  {/* Suggested tags */}
+                  <Text style={styles.suggestionsLabel}>Suggested tags:</Text>
+                  <View style={styles.suggestionRow}>
+                    {['software development', 'coding', 'robotics', 'algorithms', 'math', 'design', 'writing'].map(
+                      (suggested) => (
+                        <TouchableOpacity
+                          key={suggested}
+                          style={[
+                            styles.suggestionChip,
+                            interests.includes(suggested) && styles.suggestionChipSelected,
+                          ]}
+                          onPress={() => handleAddInterestTag(suggested)}
+                          disabled={interests.includes(suggested) || profileSaving}
+                        >
+                          <Text
+                            style={[
+                              styles.suggestionChipText,
+                              interests.includes(suggested) && styles.suggestionChipTextSelected,
+                            ]}
+                          >
+                            {suggested}
+                          </Text>
+                        </TouchableOpacity>
+                      )
+                    )}
+                  </View>
+                </View>
+
+                {/* 3. Strengths */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Strengths & Skills (Optional)</Text>
+                  <Text style={styles.inputHint}>Personal aptitudes and strengths</Text>
+                  <View style={styles.tagInputRow}>
+                    <TextInput
+                      style={[styles.textInput, styles.tagTextInput]}
+                      value={strengthInput}
+                      onChangeText={setStrengthInput}
+                      onSubmitEditing={() => handleAddStrengthTag()}
+                      placeholder="Type a strength tag..."
+                      placeholderTextColor="#94a3b8"
+                      editable={!profileSaving}
+                    />
+                    <TouchableOpacity
+                      style={styles.addTagButton}
+                      onPress={() => handleAddStrengthTag()}
+                      disabled={!strengthInput.trim() || profileSaving}
+                    >
+                      <Text style={styles.addTagButtonText}>+ Add</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Active Strength Chips */}
+                  <View style={styles.tagsContainer}>
+                    {strengths.map((tag) => (
+                      <View key={tag} style={[styles.tagChip, styles.tagChipStrength]}>
+                        <Text style={[styles.tagChipText, styles.tagChipTextStrength]}>{tag}</Text>
+                        <TouchableOpacity
+                          onPress={() => handleRemoveStrengthTag(tag)}
+                          style={styles.removeTagBtn}
+                          disabled={profileSaving}
+                        >
+                          <Text style={styles.removeTagText}>✕</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+
+                  {/* Suggested tags */}
+                  <Text style={styles.suggestionsLabel}>Suggested tags:</Text>
+                  <View style={styles.suggestionRow}>
+                    {['problem-solving', 'logical thinking', 'creativity', 'analysis', 'communication', 'focus'].map(
+                      (suggested) => (
+                        <TouchableOpacity
+                          key={suggested}
+                          style={[
+                            styles.suggestionChip,
+                            strengths.includes(suggested) && styles.suggestionChipSelected,
+                          ]}
+                          onPress={() => handleAddStrengthTag(suggested)}
+                          disabled={strengths.includes(suggested) || profileSaving}
+                        >
+                          <Text
+                            style={[
+                              styles.suggestionChipText,
+                              strengths.includes(suggested) && styles.suggestionChipTextSelected,
+                            ]}
+                          >
+                            {suggested}
+                          </Text>
+                        </TouchableOpacity>
+                      )
+                    )}
+                  </View>
+                </View>
+
+                {/* Action Buttons */}
+                <View style={styles.actionButtonsRow}>
+                  <TouchableOpacity
+                    style={[styles.saveProfileButton, profileSaving && styles.buttonDisabled]}
+                    onPress={handleSavePreferences}
+                    disabled={profileSaving}
+                  >
+                    {profileSaving ? (
+                      <ActivityIndicator size="small" color="#ffffff" />
+                    ) : (
+                      <Text style={styles.saveProfileButtonText}>💾 Save Preferences</Text>
+                    )}
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.clearProfileButton, profileSaving && styles.buttonDisabled]}
+                    onPress={handleClearPreferences}
+                    disabled={profileSaving}
+                  >
+                    <Text style={styles.clearProfileButtonText}>Clear All</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </View>
+        ) : currentView === 'attendance' ? (
           <View style={styles.attendanceContainer}>
             <View style={styles.attendanceHeaderRow}>
               <Text style={styles.sectionTitle}>My Attendance</Text>
@@ -1024,5 +1387,219 @@ const styles = StyleSheet.create({
   },
   recordStatusTextAbsent: {
     color: '#dc2626',
+  },
+  profileContainer: {
+    marginTop: 4,
+  },
+  profileHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  profileRefreshBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#eff6ff',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  profileRefreshText: {
+    fontSize: 12,
+    color: '#2563eb',
+    fontWeight: '600',
+  },
+  profileSubtitle: {
+    fontSize: 13,
+    color: '#64748b',
+    lineHeight: 18,
+    marginBottom: 16,
+  },
+  formContainer: {
+    gap: 16,
+  },
+  feedbackBanner: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  feedbackSuccess: {
+    backgroundColor: '#f0fdf4',
+    borderColor: '#bbf7d0',
+  },
+  feedbackError: {
+    backgroundColor: '#fef2f2',
+    borderColor: '#fecaca',
+  },
+  feedbackText: {
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  feedbackTextSuccess: {
+    color: '#166534',
+  },
+  feedbackTextError: {
+    color: '#991b1b',
+  },
+  inputGroup: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 14,
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginBottom: 2,
+  },
+  inputHint: {
+    fontSize: 12,
+    color: '#64748b',
+    marginBottom: 10,
+  },
+  textInput: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 14,
+    color: '#0f172a',
+  },
+  tagInputRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  tagTextInput: {
+    flex: 1,
+  },
+  addTagButton: {
+    backgroundColor: '#2563eb',
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addTagButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  tagsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 10,
+  },
+  tagChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 16,
+    paddingVertical: 4,
+    paddingLeft: 10,
+    paddingRight: 6,
+    gap: 6,
+  },
+  tagChipText: {
+    fontSize: 12,
+    color: '#1d4ed8',
+    fontWeight: '600',
+  },
+  tagChipStrength: {
+    backgroundColor: '#f0fdf4',
+    borderColor: '#bbf7d0',
+  },
+  tagChipTextStrength: {
+    color: '#15803d',
+  },
+  removeTagBtn: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#dbeafe',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  removeTagText: {
+    fontSize: 9,
+    color: '#1d4ed8',
+    fontWeight: 'bold',
+  },
+  suggestionsLabel: {
+    fontSize: 11,
+    color: '#94a3b8',
+    fontWeight: '600',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  suggestionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  suggestionChip: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+  },
+  suggestionChipSelected: {
+    backgroundColor: '#f1f5f9',
+    borderColor: '#cbd5e1',
+  },
+  suggestionChipText: {
+    fontSize: 11,
+    color: '#475569',
+    fontWeight: '500',
+  },
+  suggestionChipTextSelected: {
+    color: '#94a3b8',
+    textDecorationLine: 'line-through',
+  },
+  actionButtonsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  saveProfileButton: {
+    flex: 2,
+    backgroundColor: '#2563eb',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  saveProfileButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  clearProfileButton: {
+    flex: 1,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clearProfileButtonText: {
+    color: '#475569',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

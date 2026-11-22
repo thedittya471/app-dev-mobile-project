@@ -13,6 +13,7 @@ import {
   sessionRosters,
   attendanceCodes,
   attendanceRecords,
+  studentProfiles,
 } from './db/schema.js';
 import {
   verifyPassword,
@@ -1247,6 +1248,107 @@ app.get('/attendance/student', requireAuth, async (req, res) => {
       summary,
       bySubject,
       records,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function normalizeTags(input) {
+  if (!input) return [];
+  const list = Array.isArray(input) ? input : String(input).split(',');
+  const cleaned = list
+    .map((t) => String(t).trim().toLowerCase())
+    .filter(Boolean);
+  return Array.from(new Set(cleaned));
+}
+
+// Student planning preferences endpoints
+app.get('/student/preferences', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ error: 'Access denied: only students have planning preferences' });
+    }
+
+    if (req.query.studentId && req.query.studentId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied: cannot read other students preferences' });
+    }
+
+    const studentId = req.user.id;
+    const rows = await db
+      .select()
+      .from(studentProfiles)
+      .where(eq(studentProfiles.studentId, studentId));
+
+    if (!rows.length) {
+      return res.status(200).json({
+        studentId,
+        careerGoal: '',
+        interests: [],
+        strengths: [],
+        updatedAt: null,
+      });
+    }
+
+    const profile = rows[0];
+    res.status(200).json({
+      studentId: profile.studentId,
+      careerGoal: profile.careerGoal || '',
+      interests: Array.isArray(profile.interests) ? profile.interests : [],
+      strengths: Array.isArray(profile.strengths) ? profile.strengths : [],
+      updatedAt: profile.updatedAt,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/student/preferences', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ error: 'Access denied: only students can edit planning preferences' });
+    }
+
+    if (req.body.studentId && req.body.studentId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied: cannot edit other students preferences' });
+    }
+
+    const studentId = req.user.id;
+    const careerGoal = req.body.careerGoal !== undefined ? String(req.body.careerGoal).trim() : '';
+    const interests = normalizeTags(req.body.interests);
+    const strengths = normalizeTags(req.body.strengths);
+    const now = new Date();
+
+    const [savedProfile] = await db
+      .insert(studentProfiles)
+      .values({
+        studentId,
+        careerGoal,
+        interests,
+        strengths,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: studentProfiles.studentId,
+        set: {
+          careerGoal,
+          interests,
+          strengths,
+          updatedAt: now,
+        },
+      })
+      .returning();
+
+    res.status(200).json({
+      profile: {
+        studentId: savedProfile.studentId,
+        careerGoal: savedProfile.careerGoal,
+        interests: savedProfile.interests,
+        strengths: savedProfile.strengths,
+        updatedAt: savedProfile.updatedAt,
+      },
+      message: 'Planning preferences saved successfully',
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
