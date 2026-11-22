@@ -72,3 +72,35 @@ export const periods = pgTable(
     check('period_end_after_start', sql`${table.endTime} > ${table.startTime}`),
   ]
 );
+
+export const attendanceSessions = pgTable('attendance_sessions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  periodId: uuid('period_id')
+    .notNull()
+    .unique()
+    .references(() => periods.id, { onDelete: 'cascade' }),
+  openedAt: timestamp('opened_at', { withTimezone: true }).defaultNow().notNull(),
+  closedAt: timestamp('closed_at', { withTimezone: true }),
+  status: varchar('status', { length: 20 }).notNull().default('open'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const sessionRosters = pgTable(
+  'session_rosters',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    sessionId: uuid('session_id')
+      .notNull()
+      .references(() => attendanceSessions.id, { onDelete: 'cascade' }),
+    studentId: uuid('student_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    studentName: varchar('student_name', { length: 255 }).notNull(),
+    studentEmail: varchar('student_email', { length: 255 }).notNull(),
+    status: varchar('status', { length: 20 }).notNull().default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique('session_roster_student_unique').on(table.sessionId, table.studentId),
+  ]
+);

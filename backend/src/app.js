@@ -2,7 +2,14 @@ import express from 'express';
 import cors from 'cors';
 import { eq, and, inArray, asc } from 'drizzle-orm';
 import { checkDbConnection, db } from './db/index.js';
-import { users, sections, enrollments, periods } from './db/schema.js';
+import {
+  users,
+  sections,
+  enrollments,
+  periods,
+  attendanceSessions,
+  sessionRosters,
+} from './db/schema.js';
 import {
   verifyPassword,
   createSession,
@@ -219,9 +226,9 @@ app.get('/schedule/:id', requireAuth, async (req, res) => {
         teacherName: users.name,
       })
       .from(periods)
-        .innerJoin(sections, eq(periods.sectionId, sections.id))
-        .innerJoin(users, eq(periods.teacherId, users.id))
-        .where(eq(periods.id, id));
+      .innerJoin(sections, eq(periods.sectionId, sections.id))
+      .innerJoin(users, eq(periods.teacherId, users.id))
+      .where(eq(periods.id, id));
 
     if (!rows.length) {
       return res.status(404).json({ error: 'Period not found' });
@@ -254,6 +261,12 @@ app.get('/schedule/:id', requireAuth, async (req, res) => {
     const startFormatted = formatTimeInTimezone(period.startTime, periodTimezone);
     const endFormatted = formatTimeInTimezone(period.endTime, periodTimezone);
 
+    // Also check if attendance session exists for this period
+    const sessionRows = await db
+      .select()
+      .from(attendanceSessions)
+      .where(eq(attendanceSessions.periodId, period.id));
+
     res.status(200).json({
       period: {
         ...period,
@@ -261,8 +274,142 @@ app.get('/schedule/:id', requireAuth, async (req, res) => {
         formattedTime: `${startFormatted} - ${endFormatted}`,
         startTimeFormatted: startFormatted,
         endTimeFormatted: endFormatted,
+        session: sessionRows[0] || null,
       },
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Attendance Session endpoints
+app.post('/attendance/sessions', requireAuth, async (req, res) => {
+  try {
+    const { periodId } = req.body || {};
+    if (!periodId) {
+      return res.status(400).json({ error: 'periodId required' });
+    }
+
+    // Role check
+    if (req.user.role !== 'teacher') {
+      return res.status(403).json({ error: 'Only teachers can start attendance sessions' });
+    }
+
+    // Verify period exists and is assigned to this teacher
+    const periodRows = await db
+      .select()
+      .from(periods)
+      .where(eq(periods.id, periodId));
+
+    if (!periodRows.length) {
+      return res.status(404).json({ error: 'Period not found' });
+    }
+
+    const period = periodRows[0];
+    if (period.teacherId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied: not assigned teacher for this period' });
+    }
+
+    // Check if session already exists
+    const existingSessions = await db
+      .select()
+      .from(attendanceSessions)
+      .where(eq(attendanceSessions.periodId, periodId));
+
+    if (existingSessions.length > 0) {
+      const existingSession = existingSessions[0];
+      const roster = await db
+        .select()
+        .from(sessionRosters)
+        .where(eq(sessionRosters.sessionId, existingSession.id));
+
+      return res.status(200).json({
+        session: existingSession,
+        roster,
+        message: 'Existing attendance session retrieved',
+      });
+    }
+
+    // Create session and capture roster snapshot in one transaction
+    const result = await db.transaction(async (tx) => {
+      const [newSession] = await tx
+        .insert(attendanceSessions)
+        .values({
+          periodId,
+          openedAt: new Date(),
+          status: 'open',
+        })
+        .returning();
+
+      const enrolledStudents = await tx
+        .select({
+          studentId: enrollments.studentId,
+          studentName: users.name,
+          studentEmail: users.email,
+        })
+        .from(enrollments)
+        .innerJoin(users, eq(enrollments.studentId, users.id))
+        .where(eq(enrollments.sectionId, period.sectionId));
+
+      let roster = [];
+      if (enrolledStudents.length > 0) {
+        roster = await tx
+          .insert(sessionRosters)
+          .values(
+            enrolledStudents.map((s) => ({
+              sessionId: newSession.id,
+              studentId: s.studentId,
+              studentName: s.studentName,
+              studentEmail: s.studentEmail,
+              status: 'pending',
+            }))
+          )
+          .returning();
+      }
+
+      return { session: newSession, roster };
+    });
+
+    res.status(201).json({
+      session: result.session,
+      roster: result.roster,
+      message: 'Attendance session opened successfully',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/attendance/sessions/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const sessionRows = await db
+      .select({
+        session: attendanceSessions,
+        period: periods,
+      })
+      .from(attendanceSessions)
+      .innerJoin(periods, eq(attendanceSessions.periodId, periods.id))
+      .where(eq(attendanceSessions.id, id));
+
+    if (!sessionRows.length) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const { session, period } = sessionRows[0];
+
+    // Authorization: teacher assigned to period
+    if (req.user.role === 'teacher' && period.teacherId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied: not assigned teacher' });
+    }
+
+    const roster = await db
+      .select()
+      .from(sessionRosters)
+      .where(eq(sessionRosters.sessionId, session.id));
+
+    res.status(200).json({ session, roster });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

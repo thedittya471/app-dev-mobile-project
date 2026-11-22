@@ -8,6 +8,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { getSchedule, getPeriodById } from '../services/schedule';
+import { openAttendanceSession } from '../services/attendance';
 
 export default function TeacherDashboard({ user, onSignOut }) {
   const [scheduleData, setScheduleData] = useState({
@@ -17,10 +18,13 @@ export default function TeacherDashboard({ user, onSignOut }) {
   });
   const [selectedDate, setSelectedDate] = useState('today');
   const [selectedPeriod, setSelectedPeriod] = useState(null);
+  const [activeSessionData, setActiveSessionData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(false);
   const [error, setError] = useState(null);
   const [detailError, setDetailError] = useState(null);
+  const [sessionError, setSessionError] = useState(null);
 
   const loadSchedule = useCallback(async (dateParam) => {
     setLoading(true);
@@ -42,9 +46,20 @@ export default function TeacherDashboard({ user, onSignOut }) {
   async function handleOpenPeriod(periodId) {
     setDetailLoading(true);
     setDetailError(null);
+    setActiveSessionData(null);
+    setSessionError(null);
     try {
       const period = await getPeriodById(periodId);
       setSelectedPeriod(period);
+      if (period.session) {
+        // If session already exists, load it
+        try {
+          const sessionResult = await openAttendanceSession(periodId);
+          setActiveSessionData(sessionResult);
+        } catch {
+          // Keep period view even if session load fails
+        }
+      }
     } catch (err) {
       setDetailError(err.message || 'Inaccessible or missing period');
       setSelectedPeriod(null);
@@ -53,9 +68,26 @@ export default function TeacherDashboard({ user, onSignOut }) {
     }
   }
 
+  async function handleStartSession() {
+    if (!selectedPeriod) return;
+    setSessionLoading(true);
+    setSessionError(null);
+    try {
+      const result = await openAttendanceSession(selectedPeriod.id);
+      setActiveSessionData(result);
+    } catch (err) {
+      setSessionError(err.message || 'Failed to start session');
+    } finally {
+      setSessionLoading(false);
+    }
+  }
+
   function handleBackToTimetable() {
     setSelectedPeriod(null);
+    setActiveSessionData(null);
     setDetailError(null);
+    setSessionError(null);
+    loadSchedule(selectedDate);
   }
 
   return (
@@ -96,24 +128,66 @@ export default function TeacherDashboard({ user, onSignOut }) {
                 <Text style={styles.metaLabel}>Timezone:</Text>
                 <Text style={styles.metaValue}>{selectedPeriod.timezone}</Text>
               </View>
-              <View style={styles.metaRow}>
-                <Text style={styles.metaLabel}>School Day:</Text>
-                <Text style={styles.metaValue}>
-                  {selectedPeriod.schoolDayStart} - {selectedPeriod.schoolDayEnd}
-                </Text>
-              </View>
 
-              <TouchableOpacity
-                style={styles.attendanceButton}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.attendanceButtonText}>
-                  Start Attendance Session
-                </Text>
-              </TouchableOpacity>
-              <Text style={styles.attendanceHint}>
-                Entry point for QR attendance (Task 07).
-              </Text>
+              {activeSessionData ? (
+                <View style={styles.sessionBox}>
+                  <View style={styles.sessionStatusRow}>
+                    <View style={styles.statusPill}>
+                      <Text style={styles.statusPillText}>
+                        {activeSessionData.session.status.toUpperCase()}
+                      </Text>
+                    </View>
+                    <Text style={styles.sessionMetaText}>
+                      Opened: {new Date(activeSessionData.session.openedAt).toLocaleTimeString()}
+                    </Text>
+                  </View>
+
+                  <Text style={styles.rosterTitle}>
+                    Roster Snapshot ({activeSessionData.roster.length} students)
+                  </Text>
+                  <View style={styles.rosterList}>
+                    {activeSessionData.roster.map((s) => (
+                      <View key={s.id} style={styles.rosterRow}>
+                        <View>
+                          <Text style={styles.studentName}>{s.studentName}</Text>
+                          <Text style={styles.studentEmail}>{s.studentEmail}</Text>
+                        </View>
+                        <View style={styles.rosterStatusPill}>
+                          <Text style={styles.rosterStatusText}>{s.status}</Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                  <Text style={styles.attendanceHint}>
+                    Attendance session active. QR code generation ready for Task 08.
+                  </Text>
+                </View>
+              ) : (
+                <View>
+                  {sessionError ? (
+                    <View style={styles.errorBox}>
+                      <Text style={styles.errorText}>{sessionError}</Text>
+                    </View>
+                  ) : null}
+
+                  <TouchableOpacity
+                    style={[styles.attendanceButton, sessionLoading && styles.buttonDisabled]}
+                    onPress={handleStartSession}
+                    disabled={sessionLoading}
+                  >
+                    {sessionLoading ? (
+                      <ActivityIndicator color="#fff" />
+                    ) : (
+                      <Text style={styles.attendanceButtonText}>
+                        Start Attendance Session
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                  <Text style={styles.attendanceHint}>
+                    Captures roster snapshot and creates at most one session per period.
+                  </Text>
+                </View>
+              )}
             </View>
           </View>
         ) : (
@@ -227,15 +301,6 @@ export default function TeacherDashboard({ user, onSignOut }) {
                 ))}
               </View>
             )}
-
-            <View style={styles.testSection}>
-              <TouchableOpacity
-                style={styles.testButton}
-                onPress={() => handleOpenPeriod('00000000-0000-0000-0000-000000000000')}
-              >
-                <Text style={styles.testButtonText}>Test Inaccessible / Missing Period</Text>
-              </TouchableOpacity>
-            </View>
           </View>
         )}
       </View>
@@ -373,18 +438,21 @@ const styles = StyleSheet.create({
   errorBox: {
     backgroundColor: '#fee2e2',
     borderColor: '#fca5a5',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 12,
   },
   errorText: {
     color: '#b91c1c',
     fontSize: 14,
     textAlign: 'center',
-    marginBottom: 10,
   },
   retryButton: {
     paddingHorizontal: 16,
     paddingVertical: 6,
     backgroundColor: '#b91c1c',
     borderRadius: 6,
+    marginTop: 8,
   },
   retryButtonText: {
     color: '#ffffff',
@@ -529,29 +597,89 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
   },
+  buttonDisabled: {
+    backgroundColor: '#86efac',
+  },
   attendanceButtonText: {
     color: '#ffffff',
     fontSize: 15,
     fontWeight: '700',
   },
   attendanceHint: {
-    marginTop: 6,
+    marginTop: 8,
     fontSize: 12,
     color: '#64748b',
     textAlign: 'center',
+    lineHeight: 16,
   },
-  testSection: {
-    marginTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#f1f5f9',
-    paddingTop: 12,
+  sessionBox: {
+    marginTop: 18,
+    padding: 14,
+    backgroundColor: '#f0fdf4',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
   },
-  testButton: {
-    paddingVertical: 8,
+  sessionStatusRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: 12,
   },
-  testButtonText: {
+  statusPill: {
+    backgroundColor: '#22c55e',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  statusPillText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  sessionMetaText: {
     fontSize: 12,
-    color: '#94a3b8',
+    color: '#15803d',
+  },
+  rosterTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#166534',
+    marginBottom: 8,
+  },
+  rosterList: {
+    gap: 6,
+    marginBottom: 10,
+  },
+  rosterRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 8,
+    backgroundColor: '#ffffff',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#dcfce7',
+  },
+  studentName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  studentEmail: {
+    fontSize: 11,
+    color: '#64748b',
+  },
+  rosterStatusPill: {
+    backgroundColor: '#fef3c7',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  rosterStatusText: {
+    color: '#92400e',
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'capitalize',
   },
 });

@@ -1,13 +1,19 @@
 import 'dotenv/config';
 import { eq } from 'drizzle-orm';
 import { db, pool } from './db/index.js';
-import { users, sections, enrollments, periods } from './db/schema.js';
+import { users, sections, enrollments, periods, attendanceSessions } from './db/schema.js';
 import { hashPassword } from './auth.js';
 
 const SEED_USERS = [
   {
     email: 'teacher@pilot.edu',
     name: 'Prof. Alan Smith',
+    role: 'teacher',
+    password: 'password123',
+  },
+  {
+    email: 'teacher2@pilot.edu',
+    name: 'Prof. Bob Wilson',
     role: 'teacher',
     password: 'password123',
   },
@@ -69,21 +75,17 @@ async function seed() {
   }
   const section = sectionRows[0];
 
-  // 3. Enrollments (student1 and student2; NOT unrelated)
+  // 3. Enrollments (clean and ensure exactly student1 and student2)
+  await db.delete(attendanceSessions);
+  await db.delete(enrollments).where(eq(enrollments.sectionId, section.id));
+
   for (const email of ['student1@pilot.edu', 'student2@pilot.edu']) {
     const student = userMap[email];
-    const existingEnrollment = await db
-      .select()
-      .from(enrollments)
-      .where(eq(enrollments.studentId, student.id));
-
-    if (existingEnrollment.length === 0) {
-      await db.insert(enrollments).values({
-        sectionId: section.id,
-        studentId: student.id,
-      });
-      console.log(`Enrolled ${email} into section ${section.name}`);
-    }
+    await db.insert(enrollments).values({
+      sectionId: section.id,
+      studentId: student.id,
+    });
+    console.log(`Enrolled ${email} into section ${section.name}`);
   }
 
   // 4. Periods (two separated periods on today's date in America/New_York)
@@ -95,7 +97,6 @@ async function seed() {
     day: '2-digit',
   }).format(new Date());
 
-  // Clean old periods for clean testing
   await db.delete(periods).where(eq(periods.sectionId, section.id));
 
   const periodDefinitions = [
@@ -119,7 +120,7 @@ async function seed() {
       startTime: p.startTime,
       endTime: p.endTime,
     });
-    console.log(`Created period: ${p.subject} in ${section.timezone} (${p.startTime.toISOString()} - ${p.endTime.toISOString()})`);
+    console.log(`Created period: ${p.subject} in ${section.timezone}`);
   }
 
   console.log('Seeding finished.');
