@@ -1,3 +1,5 @@
+import { suggestActivityForGap } from './activities.js';
+
 export function formatTimeInTimezone(dateObj, timezone = 'America/New_York') {
   return new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
@@ -56,6 +58,8 @@ export function computeFreePeriods({
   schoolDayEnd = '17:00',
   timezone = 'America/New_York',
   dateStr,
+  preferences = null,
+  catalog = undefined,
 }) {
   // Preserve empty-day state when no classes are scheduled
   if (!classes || classes.length === 0 || !dateStr) {
@@ -99,6 +103,7 @@ export function computeFreePeriods({
   }
 
   const freePeriods = [];
+  const usedActivityIds = new Set();
   let cursor = schoolBoundaryStart.getTime();
 
   for (const occ of merged) {
@@ -107,6 +112,18 @@ export function computeFreePeriods({
       const gapEnd = new Date(occ.start);
       const durationMinutes = Math.round((gapEnd.getTime() - gapStart.getTime()) / 60000);
       if (durationMinutes > 0) {
+        const suggestion = suggestActivityForGap({
+          gapDurationMinutes: durationMinutes,
+          careerGoal: preferences?.careerGoal || '',
+          interests: preferences?.interests || [],
+          strengths: preferences?.strengths || [],
+          catalog,
+          usedActivityIds,
+        });
+        if (suggestion) {
+          usedActivityIds.add(suggestion.id);
+        }
+
         freePeriods.push({
           type: 'free',
           id: `free-${gapStart.getTime()}`,
@@ -117,6 +134,7 @@ export function computeFreePeriods({
           formattedTime: `${formatTimeInTimezone(gapStart, timezone)} - ${formatTimeInTimezone(gapEnd, timezone)}`,
           durationMinutes,
           durationFormatted: formatDuration(durationMinutes),
+          suggestion: suggestion || null,
         });
       }
     }
@@ -129,6 +147,18 @@ export function computeFreePeriods({
     const gapEnd = new Date(schoolBoundaryEnd.getTime());
     const durationMinutes = Math.round((gapEnd.getTime() - gapStart.getTime()) / 60000);
     if (durationMinutes > 0) {
+      const suggestion = suggestActivityForGap({
+        gapDurationMinutes: durationMinutes,
+        careerGoal: preferences?.careerGoal || '',
+        interests: preferences?.interests || [],
+        strengths: preferences?.strengths || [],
+        catalog,
+        usedActivityIds,
+      });
+      if (suggestion) {
+        usedActivityIds.add(suggestion.id);
+      }
+
       freePeriods.push({
         type: 'free',
         id: `free-${gapStart.getTime()}`,
@@ -139,6 +169,7 @@ export function computeFreePeriods({
         formattedTime: `${formatTimeInTimezone(gapStart, timezone)} - ${formatTimeInTimezone(gapEnd, timezone)}`,
         durationMinutes,
         durationFormatted: formatDuration(durationMinutes),
+        suggestion: suggestion || null,
       });
     }
   }

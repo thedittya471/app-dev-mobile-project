@@ -210,12 +210,28 @@ app.get('/schedule', requireAuth, async (req, res) => {
       mapped = mapped.filter((p) => p.periodDate === targetDate);
     }
 
+    let studentPrefs = null;
+    if (user.role === 'student') {
+      const profileRows = await db
+        .select()
+        .from(studentProfiles)
+        .where(eq(studentProfiles.studentId, user.id));
+      if (profileRows.length > 0) {
+        studentPrefs = {
+          careerGoal: profileRows[0].careerGoal || '',
+          interests: profileRows[0].interests || [],
+          strengths: profileRows[0].strengths || [],
+        };
+      }
+    }
+
     const freePeriods = computeFreePeriods({
       classes: mapped,
       schoolDayStart,
       schoolDayEnd,
       timezone: institutionTimezone,
       dateStr: targetDate,
+      preferences: studentPrefs,
     });
 
     const timeline = [...mapped, ...freePeriods].sort(

@@ -823,6 +823,27 @@ export default function StudentDashboard({ user, onSignOut }) {
                         <Text style={styles.freePeriodMeta}>
                           {item.durationMinutes} min open window within school hours
                         </Text>
+
+                        {item.suggestion ? (
+                          <View style={styles.suggestionCard}>
+                            <View style={styles.suggestionHeader}>
+                              <Text style={styles.suggestionTagLabel}>
+                                {item.suggestion.isGeneral ? '💡 GENERAL STUDY' : '💡 SUGGESTED ACTIVITY'}
+                              </Text>
+                              <Text style={styles.suggestionDurationBadge}>
+                                ⏱️ {item.suggestion.durationFormatted}
+                              </Text>
+                            </View>
+                            <Text style={styles.suggestionTitle}>{item.suggestion.title}</Text>
+                            <View style={styles.suggestionTagsRow}>
+                              {item.suggestion.tags?.map((t) => (
+                                <View key={t} style={styles.suggestionTagMini}>
+                                  <Text style={styles.suggestionTagMiniText}>{t}</Text>
+                                </View>
+                              ))}
+                            </View>
+                          </View>
+                        ) : null}
                       </View>
                     );
                   }
@@ -1080,6 +1101,53 @@ const styles = StyleSheet.create({
   freePeriodMeta: {
     fontSize: 12,
     color: '#64748b',
+  },
+  suggestionCard: {
+    marginTop: 8,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  suggestionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  suggestionTagLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#047857',
+    letterSpacing: 0.5,
+  },
+  suggestionDurationBadge: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  suggestionTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginBottom: 6,
+  },
+  suggestionTagsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  suggestionTagMini: {
+    backgroundColor: '#f1f5f9',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  suggestionTagMiniText: {
+    fontSize: 10,
+    color: '#475569',
+    fontWeight: '500',
   },
   classIndex: {
     width: 28,
