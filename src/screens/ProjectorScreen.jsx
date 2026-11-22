@@ -16,8 +16,10 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
   const [errorStatus, setErrorStatus] = useState(null);
   const [data, setData] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [networkInterrupted, setNetworkInterrupted] = useState(false);
+  const [countdown, setCountdown] = useState(0);
 
-  const loadData = useCallback(async (isRefresh = false) => {
+  const loadData = useCallback(async (isManualRefresh = false) => {
     if (!sessionId) {
       setError('No attendance session specified');
       setErrorStatus(404);
@@ -25,29 +27,112 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
       return;
     }
 
-    if (isRefresh) {
+    if (isManualRefresh) {
       setRefreshing(true);
-    } else {
-      setLoading(true);
     }
-    setError(null);
-    setErrorStatus(null);
 
     try {
       const summaryData = await getSessionSummary(sessionId);
       setData(summaryData);
+      setNetworkInterrupted(false);
+      setError(null);
+      setErrorStatus(null);
     } catch (err) {
-      setError(err.message || 'Failed to load classroom projector view');
-      setErrorStatus(err.status || 500);
+      if (!data) {
+        setError(err.message || 'Failed to load classroom projector view');
+        setErrorStatus(err.status || 500);
+      } else {
+        // If data was already loaded, mark network interrupted while keeping display
+        setNetworkInterrupted(true);
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
+  }, [sessionId, data]);
+
+  // Initial load
+  useEffect(() => {
+    let mounted = true;
+
+    async function initialFetch() {
+      if (!sessionId) {
+        setError('No attendance session specified');
+        setErrorStatus(404);
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const summaryData = await getSessionSummary(sessionId);
+        if (mounted) {
+          setData(summaryData);
+          setNetworkInterrupted(false);
+          setError(null);
+          setErrorStatus(null);
+        }
+      } catch (err) {
+        if (mounted) {
+          setError(err.message || 'Failed to load classroom projector view');
+          setErrorStatus(err.status || 500);
+        }
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+
+    initialFetch();
+
+    return () => {
+      mounted = false;
+    };
   }, [sessionId]);
 
+  // Polling every 3 seconds while projector view is open and session is open
+  // Polling is cancelled when leaving the page (component unmount) or after session closure
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    if (!sessionId || data?.session?.status === 'closed') {
+      return;
+    }
+
+    const intervalId = setInterval(async () => {
+      try {
+        const summaryData = await getSessionSummary(sessionId);
+        setData(summaryData);
+        setNetworkInterrupted(false);
+      } catch {
+        setNetworkInterrupted(true);
+      }
+    }, 3000);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [sessionId, data?.session?.status]);
+
+  // Expiry countdown timer
+  useEffect(() => {
+    if (!data?.qr?.expiresAt || data?.session?.status === 'closed') {
+      setCountdown(0);
+      return;
+    }
+
+    function checkExpiry() {
+      const remaining = Math.max(
+        0,
+        Math.round((new Date(data.qr.expiresAt).getTime() - Date.now()) / 1000)
+      );
+      setCountdown(remaining);
+    }
+
+    checkExpiry();
+    const timerId = setInterval(checkExpiry, 1000);
+
+    return () => {
+      clearInterval(timerId);
+    };
+  }, [data?.qr?.expiresAt, data?.session?.status]);
 
   if (loading) {
     return (
@@ -92,7 +177,7 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
     );
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <View style={styles.centerContainer}>
         <View style={styles.errorCard}>
@@ -116,6 +201,7 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
   const period = data?.period || {};
   const summary = data?.summary || { totalEnrolled: 0, checkedInCount: 0, absentCount: 0, percentage: 0 };
   const qr = data?.qr;
+  const isQrExpired = countdown <= 0 || (qr?.expiresAt && new Date(qr.expiresAt).getTime() <= Date.now());
 
   return (
     <ScrollView contentContainerStyle={styles.scrollContainer}>
@@ -152,6 +238,16 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
           </View>
         </View>
 
+        {/* Network interrupted alert banner */}
+        {networkInterrupted ? (
+          <View style={styles.interruptedBanner}>
+            <ActivityIndicator size="small" color="#b45309" />
+            <Text style={styles.interruptedBannerText}>
+              ⚠️ Network update interrupted. Retrying automatically...
+            </Text>
+          </View>
+        ) : null}
+
         {/* Classroom Header */}
         <View style={styles.headerArea}>
           <Text style={styles.classroomTitle}>Classroom Projector</Text>
@@ -180,7 +276,22 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
         ) : (
           <View style={styles.qrDisplayCard}>
             <View style={styles.qrWrapper}>
-              {qr?.qrDataUrl ? (
+              {/* Hide expired QR code if network interrupted or while refreshing */}
+              {networkInterrupted && isQrExpired ? (
+                <View style={styles.qrExpiredBox}>
+                  <Text style={styles.qrExpiredIcon}>⌛</Text>
+                  <Text style={styles.qrExpiredTitle}>QR Code Expired</Text>
+                  <Text style={styles.qrExpiredText}>
+                    Network interrupted. Hiding expired QR while retrying connection...
+                  </Text>
+                  <ActivityIndicator size="small" color="#d97706" style={{ marginTop: 8 }} />
+                </View>
+              ) : isQrExpired && !networkInterrupted ? (
+                <View style={styles.qrFallbackBox}>
+                  <ActivityIndicator size="large" color="#2563eb" />
+                  <Text style={styles.qrFallbackText}>Refreshing QR code...</Text>
+                </View>
+              ) : qr?.qrDataUrl ? (
                 <Image
                   source={{ uri: qr.qrDataUrl }}
                   style={styles.qrImage}
@@ -190,7 +301,7 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
               ) : (
                 <View style={styles.qrFallbackBox}>
                   <ActivityIndicator size="large" color="#2563eb" />
-                  <Text style={styles.qrFallbackText}>Loading QR code...</Text>
+                  <Text style={styles.qrFallbackText}>Generating QR code...</Text>
                 </View>
               )}
             </View>
@@ -199,20 +310,24 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
               Scan with your student mobile app to check in
             </Text>
 
-            {qr?.expiresInSeconds !== undefined ? (
-              <View style={styles.timerBadge}>
-                <Text style={styles.timerText}>
-                  Code active • Refreshing automatically
-                </Text>
-              </View>
-            ) : null}
+            <View style={[styles.timerBadge, countdown <= 5 && styles.timerBadgeExpiring]}>
+              <Text style={[styles.timerText, countdown <= 5 && styles.timerTextExpiring]}>
+                {networkInterrupted
+                  ? isQrExpired
+                    ? 'Offline • Reconnecting...'
+                    : `Expires in ${countdown}s (Offline)`
+                  : countdown > 0
+                  ? `Active • Expires in ${countdown}s`
+                  : 'Refreshing code...'}
+              </Text>
+            </View>
 
             {/* Attendance Progress Summary (no individual student names) */}
             <View style={styles.summaryBarArea}>
               <View style={styles.summaryBarHeader}>
                 <Text style={styles.summaryBarLabel}>Checked In</Text>
                 <Text style={styles.summaryBarValue}>
-                  {summary.checkedInCount} / {summary.totalEnrolled} ({summary.percentage}%)
+                  {summary.checkedInCount} of {summary.totalEnrolled} enrolled ({summary.percentage}%)
                 </Text>
               </View>
               <View style={styles.progressBarTrack}>
@@ -491,6 +606,57 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#2563eb',
     fontWeight: '500',
+  },
+  timerBadgeExpiring: {
+    backgroundColor: '#fef3c7',
+  },
+  timerTextExpiring: {
+    color: '#b45309',
+    fontWeight: '700',
+  },
+  interruptedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 16,
+  },
+  interruptedBannerText: {
+    color: '#b45309',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  qrExpiredBox: {
+    width: 320,
+    height: 320,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#fffbeb',
+    borderRadius: 12,
+  },
+  qrExpiredIcon: {
+    fontSize: 44,
+    marginBottom: 8,
+  },
+  qrExpiredTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#92400e',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  qrExpiredText: {
+    fontSize: 13,
+    color: '#b45309',
+    textAlign: 'center',
+    lineHeight: 18,
   },
   summaryBarArea: {
     width: '100%',
