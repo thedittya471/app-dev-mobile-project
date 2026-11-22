@@ -325,11 +325,21 @@ app.post('/attendance/sessions', requireAuth, async (req, res) => {
       const roster = await db
         .select()
         .from(sessionRosters)
-        .where(eq(sessionRosters.sessionId, existingSession.id));
+        .where(eq(sessionRosters.sessionId, existingSession.id))
+        .orderBy(asc(sessionRosters.studentName));
+
+      const checkedInCount = roster.filter((s) => s.status === 'present').length;
+      const pendingCount = roster.filter((s) => s.status === 'pending').length;
 
       return res.status(200).json({
         session: existingSession,
         roster,
+        summary: {
+          totalEnrolled: roster.length,
+          checkedInCount,
+          pendingCount,
+          percentage: roster.length ? Math.round((checkedInCount / roster.length) * 100) : 0,
+        },
         message: 'Existing attendance session retrieved',
       });
     }
@@ -353,7 +363,8 @@ app.post('/attendance/sessions', requireAuth, async (req, res) => {
         })
         .from(enrollments)
         .innerJoin(users, eq(enrollments.studentId, users.id))
-        .where(eq(enrollments.sectionId, period.sectionId));
+        .where(eq(enrollments.sectionId, period.sectionId))
+        .orderBy(asc(users.name));
 
       let roster = [];
       if (enrolledStudents.length > 0) {
@@ -371,12 +382,22 @@ app.post('/attendance/sessions', requireAuth, async (req, res) => {
           .returning();
       }
 
-      return { session: newSession, roster };
+      return {
+        session: newSession,
+        roster,
+        summary: {
+          totalEnrolled: roster.length,
+          checkedInCount: 0,
+          pendingCount: roster.length,
+          percentage: 0,
+        },
+      };
     });
 
     res.status(201).json({
       session: result.session,
       roster: result.roster,
+      summary: result.summary,
       message: 'Attendance session opened successfully',
     });
   } catch (err) {
@@ -403,17 +424,30 @@ app.get('/attendance/sessions/:id', requireAuth, async (req, res) => {
 
     const { session, period } = sessionRows[0];
 
-    // Authorization: teacher assigned to period
-    if (req.user.role === 'teacher' && period.teacherId !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied: not assigned teacher' });
+    // Authorization: only assigned teacher can access roster
+    if (req.user.role !== 'teacher' || period.teacherId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied: only assigned teacher can view attendance roster' });
     }
 
     const roster = await db
       .select()
       .from(sessionRosters)
-      .where(eq(sessionRosters.sessionId, session.id));
+      .where(eq(sessionRosters.sessionId, session.id))
+      .orderBy(asc(sessionRosters.studentName));
 
-    res.status(200).json({ session, roster });
+    const checkedInCount = roster.filter((s) => s.status === 'present').length;
+    const pendingCount = roster.filter((s) => s.status === 'pending').length;
+
+    res.status(200).json({
+      session,
+      roster,
+      summary: {
+        totalEnrolled: roster.length,
+        checkedInCount,
+        pendingCount,
+        percentage: roster.length ? Math.round((checkedInCount / roster.length) * 100) : 0,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

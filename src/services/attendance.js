@@ -38,6 +38,10 @@ export async function getAttendanceSession(sessionId) {
   return data;
 }
 
+export async function getAttendanceRoster(sessionId) {
+  return getAttendanceSession(sessionId);
+}
+
 export async function getSessionQrCode(sessionId) {
   const token = await getToken();
   if (!token) throw new Error('Not authenticated');

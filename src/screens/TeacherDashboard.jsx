@@ -9,7 +9,11 @@ import {
   Image,
 } from 'react-native';
 import { getSchedule, getPeriodById } from '../services/schedule';
-import { openAttendanceSession, getSessionQrCode } from '../services/attendance';
+import {
+  openAttendanceSession,
+  getSessionQrCode,
+  getAttendanceSession,
+} from '../services/attendance';
 
 export default function TeacherDashboard({ user, onSignOut }) {
   const [scheduleData, setScheduleData] = useState({
@@ -30,6 +34,9 @@ export default function TeacherDashboard({ user, onSignOut }) {
   const [qrLoading, setQrLoading] = useState(false);
   const [qrError, setQrError] = useState(null);
   const [countdown, setCountdown] = useState(0);
+  const [rosterLoading, setRosterLoading] = useState(false);
+  const [rosterRefreshing, setRosterRefreshing] = useState(false);
+  const [rosterError, setRosterError] = useState(null);
 
   const loadSchedule = useCallback(async (dateParam) => {
     setLoading(true);
@@ -59,6 +66,35 @@ export default function TeacherDashboard({ user, onSignOut }) {
     }
   }, []);
 
+  const loadRoster = useCallback(async (sessionId, isBackground = false) => {
+    if (!sessionId) return;
+    if (!isBackground) {
+      setRosterLoading(true);
+    } else {
+      setRosterRefreshing(true);
+    }
+    setRosterError(null);
+    try {
+      const data = await getAttendanceSession(sessionId);
+      setActiveSessionData((prev) => {
+        if (!prev) return data;
+        return {
+          ...prev,
+          session: data.session,
+          roster: data.roster,
+          summary: data.summary,
+        };
+      });
+    } catch (err) {
+      if (!isBackground) {
+        setRosterError(err.message || 'Failed to load attendance roster');
+      }
+    } finally {
+      setRosterLoading(false);
+      setRosterRefreshing(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadSchedule(selectedDate);
   }, [loadSchedule, selectedDate]);
@@ -72,6 +108,7 @@ export default function TeacherDashboard({ user, onSignOut }) {
     }
   }, [activeSessionData?.session?.id, activeSessionData?.session?.status, loadQrCode]);
 
+  // Poll QR code countdown
   useEffect(() => {
     if (!activeSessionData?.session?.id || activeSessionData?.session?.status !== 'open') {
       return;
@@ -89,6 +126,19 @@ export default function TeacherDashboard({ user, onSignOut }) {
 
     return () => clearInterval(timer);
   }, [activeSessionData?.session?.id, activeSessionData?.session?.status, loadQrCode]);
+
+  // Poll and refresh roster while viewing open session
+  useEffect(() => {
+    if (!activeSessionData?.session?.id || activeSessionData?.session?.status !== 'open') {
+      return;
+    }
+
+    const rosterTimer = setInterval(() => {
+      loadRoster(activeSessionData.session.id, true);
+    }, 3000);
+
+    return () => clearInterval(rosterTimer);
+  }, [activeSessionData?.session?.id, activeSessionData?.session?.status, loadRoster]);
 
   async function handleOpenPeriod(periodId) {
     setDetailLoading(true);
@@ -138,6 +188,7 @@ export default function TeacherDashboard({ user, onSignOut }) {
     setQrData(null);
     setQrError(null);
     setCountdown(0);
+    setRosterError(null);
     setDetailError(null);
     setSessionError(null);
     loadSchedule(selectedDate);
@@ -195,22 +246,104 @@ export default function TeacherDashboard({ user, onSignOut }) {
                     </Text>
                   </View>
 
-                  <Text style={styles.rosterTitle}>
-                    Roster Snapshot ({activeSessionData.roster.length} students)
-                  </Text>
-                  <View style={styles.rosterList}>
-                    {activeSessionData.roster.map((s) => (
-                      <View key={s.id} style={styles.rosterRow}>
-                        <View>
-                          <Text style={styles.studentName}>{s.studentName}</Text>
-                          <Text style={styles.studentEmail}>{s.studentEmail}</Text>
-                        </View>
-                        <View style={styles.rosterStatusPill}>
-                          <Text style={styles.rosterStatusText}>{s.status}</Text>
-                        </View>
-                      </View>
-                    ))}
+                  <View style={styles.rosterSectionHeader}>
+                    <View>
+                      <Text style={styles.rosterTitle}>
+                        Private Attendance Roster ({activeSessionData.roster.length} students)
+                      </Text>
+                      <Text style={styles.rosterSummaryText}>
+                        Checked In: {activeSessionData.roster.filter((s) => s.status === 'present').length} of {activeSessionData.roster.length} ({activeSessionData.roster.length ? Math.round((activeSessionData.roster.filter((s) => s.status === 'present').length / activeSessionData.roster.length) * 100) : 0}%)
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.rosterRefreshButton}
+                      onPress={() => loadRoster(activeSessionData.session.id, false)}
+                      disabled={rosterLoading || rosterRefreshing}
+                    >
+                      {rosterRefreshing ? (
+                        <ActivityIndicator size="small" color="#166534" />
+                      ) : (
+                        <Text style={styles.rosterRefreshButtonText}>↻ Refresh</Text>
+                      )}
+                    </TouchableOpacity>
                   </View>
+
+                  <View style={styles.progressBarContainer}>
+                    <View
+                      style={[
+                        styles.progressBarFill,
+                        {
+                          width: `${activeSessionData.roster.length ? Math.round((activeSessionData.roster.filter((s) => s.status === 'present').length / activeSessionData.roster.length) * 100) : 0}%`,
+                        },
+                      ]}
+                    />
+                  </View>
+
+                  <View style={styles.summaryPillRow}>
+                    <View style={styles.presentCountPill}>
+                      <Text style={styles.presentCountText}>
+                        ✓ {activeSessionData.roster.filter((s) => s.status === 'present').length} Checked In
+                      </Text>
+                    </View>
+                    <View style={styles.pendingCountPill}>
+                      <Text style={styles.pendingCountText}>
+                        ⏳ {activeSessionData.roster.filter((s) => s.status === 'pending').length} Pending
+                      </Text>
+                    </View>
+                  </View>
+
+                  {rosterLoading ? (
+                    <View style={styles.rosterLoadingBox}>
+                      <ActivityIndicator size="small" color="#166534" />
+                      <Text style={styles.rosterLoadingText}>Loading roster...</Text>
+                    </View>
+                  ) : rosterError ? (
+                    <View style={styles.rosterErrorBox}>
+                      <Text style={styles.rosterErrorText}>{rosterError}</Text>
+                      <TouchableOpacity
+                        style={styles.rosterRetryButton}
+                        onPress={() => loadRoster(activeSessionData.session.id, false)}
+                      >
+                        <Text style={styles.rosterRetryButtonText}>Retry Roster</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <View style={styles.rosterList}>
+                      {activeSessionData.roster.map((s) => {
+                        const isPresent = s.status === 'present';
+                        return (
+                          <View
+                            key={s.id}
+                            style={[styles.rosterRow, isPresent && styles.rosterRowPresent]}
+                          >
+                            <View style={styles.rosterStudentInfo}>
+                              <Text style={styles.studentName}>{s.studentName}</Text>
+                              <Text style={styles.studentEmail}>{s.studentEmail}</Text>
+                            </View>
+                            <View
+                              style={[
+                                styles.rosterStatusPill,
+                                isPresent
+                                  ? styles.rosterStatusPillPresent
+                                  : styles.rosterStatusPillPending,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.rosterStatusText,
+                                  isPresent
+                                    ? styles.rosterStatusTextPresent
+                                    : styles.rosterStatusTextPending,
+                                ]}
+                              >
+                                {isPresent ? '✓ Checked In' : '⏳ Pending'}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  )}
                   <View style={styles.qrCard}>
                     <View style={styles.qrHeaderRow}>
                       <Text style={styles.qrTitle}>Classroom Check-In QR</Text>
@@ -747,25 +880,134 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#15803d',
   },
+  rosterSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
   rosterTitle: {
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '700',
     color: '#166534',
-    marginBottom: 8,
+  },
+  rosterSummaryText: {
+    fontSize: 12,
+    color: '#15803d',
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  rosterRefreshButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: '#dcfce7',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#86efac',
+  },
+  rosterRefreshButtonText: {
+    fontSize: 11,
+    color: '#166534',
+    fontWeight: '700',
+  },
+  progressBarContainer: {
+    height: 6,
+    width: '100%',
+    backgroundColor: '#e2e8f0',
+    borderRadius: 3,
+    overflow: 'hidden',
+    marginBottom: 10,
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#16a34a',
+    borderRadius: 3,
+  },
+  summaryPillRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  presentCountPill: {
+    backgroundColor: '#dcfce7',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#86efac',
+  },
+  presentCountText: {
+    fontSize: 11,
+    color: '#15803d',
+    fontWeight: '700',
+  },
+  pendingCountPill: {
+    backgroundColor: '#fef3c7',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+  },
+  pendingCountText: {
+    fontSize: 11,
+    color: '#92400e',
+    fontWeight: '700',
+  },
+  rosterLoadingBox: {
+    padding: 16,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  rosterLoadingText: {
+    fontSize: 12,
+    color: '#166534',
+  },
+  rosterErrorBox: {
+    padding: 12,
+    backgroundColor: '#fee2e2',
+    borderRadius: 6,
+    marginBottom: 10,
+    alignItems: 'center',
+  },
+  rosterErrorText: {
+    color: '#b91c1c',
+    fontSize: 12,
+    marginBottom: 6,
+  },
+  rosterRetryButton: {
+    backgroundColor: '#b91c1c',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  rosterRetryButtonText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '600',
   },
   rosterList: {
     gap: 6,
-    marginBottom: 10,
+    marginBottom: 12,
   },
   rosterRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 8,
+    padding: 10,
     backgroundColor: '#ffffff',
     borderRadius: 6,
     borderWidth: 1,
     borderColor: '#dcfce7',
+  },
+  rosterRowPresent: {
+    borderColor: '#86efac',
+    backgroundColor: '#f0fdf4',
+  },
+  rosterStudentInfo: {
+    flex: 1,
   },
   studentName: {
     fontSize: 13,
@@ -777,16 +1019,30 @@ const styles = StyleSheet.create({
     color: '#64748b',
   },
   rosterStatusPill: {
-    backgroundColor: '#fef3c7',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     borderRadius: 4,
   },
+  rosterStatusPillPresent: {
+    backgroundColor: '#dcfce7',
+    borderColor: '#86efac',
+    borderWidth: 1,
+  },
+  rosterStatusPillPending: {
+    backgroundColor: '#fef3c7',
+    borderColor: '#fde68a',
+    borderWidth: 1,
+  },
   rosterStatusText: {
-    color: '#92400e',
     fontSize: 11,
     fontWeight: '600',
-    textTransform: 'capitalize',
+  },
+  rosterStatusTextPresent: {
+    color: '#15803d',
+    fontWeight: '700',
+  },
+  rosterStatusTextPending: {
+    color: '#92400e',
   },
   qrCard: {
     backgroundColor: '#ffffff',
