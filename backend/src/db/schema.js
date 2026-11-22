@@ -104,3 +104,13 @@ export const sessionRosters = pgTable(
     unique('session_roster_student_unique').on(table.sessionId, table.studentId),
   ]
 );
+
+export const attendanceCodes = pgTable('attendance_codes', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  sessionId: uuid('session_id')
+    .notNull()
+    .references(() => attendanceSessions.id, { onDelete: 'cascade' }),
+  code: varchar('code', { length: 255 }).notNull().unique(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});

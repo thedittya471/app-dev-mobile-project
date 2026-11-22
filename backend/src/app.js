@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
-import { eq, and, inArray, asc } from 'drizzle-orm';
+import crypto from 'node:crypto';
+import QRCode from 'qrcode';
+import { eq, and, inArray, asc, desc, gt } from 'drizzle-orm';
 import { checkDbConnection, db } from './db/index.js';
 import {
   users,
@@ -9,6 +11,7 @@ import {
   periods,
   attendanceSessions,
   sessionRosters,
+  attendanceCodes,
 } from './db/schema.js';
 import {
   verifyPassword,
@@ -410,6 +413,105 @@ app.get('/attendance/sessions/:id', requireAuth, async (req, res) => {
       .where(eq(sessionRosters.sessionId, session.id));
 
     res.status(200).json({ session, roster });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const QR_CODE_TTL_SECONDS = 20;
+
+app.get('/attendance/sessions/:id/code', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const sessionRows = await db
+      .select({
+        session: attendanceSessions,
+        period: periods,
+      })
+      .from(attendanceSessions)
+      .innerJoin(periods, eq(attendanceSessions.periodId, periods.id))
+      .where(eq(attendanceSessions.id, id));
+
+    if (!sessionRows.length) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const { session, period } = sessionRows[0];
+
+    // Authorization: only the assigned teacher can fetch the code directly
+    if (req.user.role !== 'teacher' || period.teacherId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied: only assigned teacher can access classroom QR code' });
+    }
+
+    // Check if session is open
+    if (session.status !== 'open') {
+      return res.status(400).json({ error: 'Attendance session is closed' });
+    }
+
+    const now = new Date();
+
+    // Check for existing active code that has not expired
+    // Reuse current code until it expires so multiple displays stay in sync
+    const activeCodes = await db
+      .select()
+      .from(attendanceCodes)
+      .where(
+        and(
+          eq(attendanceCodes.sessionId, session.id),
+          gt(attendanceCodes.expiresAt, now)
+        )
+      )
+      .orderBy(desc(attendanceCodes.expiresAt))
+      .limit(1);
+
+    let activeCode;
+    if (activeCodes.length > 0) {
+      activeCode = activeCodes[0];
+    } else {
+      // Generate unpredictable code
+      const code = crypto.randomBytes(16).toString('hex');
+      const expiresAt = new Date(now.getTime() + QR_CODE_TTL_SECONDS * 1000);
+
+      const [newCode] = await db
+        .insert(attendanceCodes)
+        .values({
+          sessionId: session.id,
+          code,
+          expiresAt,
+          createdAt: now,
+        })
+        .returning();
+
+      activeCode = newCode;
+    }
+
+    // Payload limited strictly to what check-in needs
+    const qrPayload = JSON.stringify({
+      sessionId: session.id,
+      code: activeCode.code,
+    });
+
+    const qrDataUrl = await QRCode.toDataURL(qrPayload, {
+      width: 280,
+      margin: 2,
+      errorCorrectionLevel: 'M',
+    });
+
+    const expiresInSeconds = Math.max(
+      0,
+      Math.round((new Date(activeCode.expiresAt).getTime() - Date.now()) / 1000)
+    );
+
+    res.status(200).json({
+      sessionId: session.id,
+      code: activeCode.code,
+      qrPayload,
+      qrDataUrl,
+      expiresAt: activeCode.expiresAt,
+      expiresInSeconds,
+      serverTime: new Date().toISOString(),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

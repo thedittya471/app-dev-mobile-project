@@ -6,9 +6,10 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   ScrollView,
+  Image,
 } from 'react-native';
 import { getSchedule, getPeriodById } from '../services/schedule';
-import { openAttendanceSession } from '../services/attendance';
+import { openAttendanceSession, getSessionQrCode } from '../services/attendance';
 
 export default function TeacherDashboard({ user, onSignOut }) {
   const [scheduleData, setScheduleData] = useState({
@@ -25,6 +26,10 @@ export default function TeacherDashboard({ user, onSignOut }) {
   const [error, setError] = useState(null);
   const [detailError, setDetailError] = useState(null);
   const [sessionError, setSessionError] = useState(null);
+  const [qrData, setQrData] = useState(null);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrError, setQrError] = useState(null);
+  const [countdown, setCountdown] = useState(0);
 
   const loadSchedule = useCallback(async (dateParam) => {
     setLoading(true);
@@ -39,15 +44,60 @@ export default function TeacherDashboard({ user, onSignOut }) {
     }
   }, []);
 
+  const loadQrCode = useCallback(async (sessionId) => {
+    if (!sessionId) return;
+    setQrLoading(true);
+    setQrError(null);
+    try {
+      const codeResult = await getSessionQrCode(sessionId);
+      setQrData(codeResult);
+      setCountdown(codeResult.expiresInSeconds);
+    } catch (err) {
+      setQrError(err.message || 'Failed to fetch QR code');
+    } finally {
+      setQrLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadSchedule(selectedDate);
   }, [loadSchedule, selectedDate]);
+
+  useEffect(() => {
+    if (activeSessionData?.session?.id && activeSessionData?.session?.status === 'open') {
+      loadQrCode(activeSessionData.session.id);
+    } else {
+      setQrData(null);
+      setCountdown(0);
+    }
+  }, [activeSessionData?.session?.id, activeSessionData?.session?.status, loadQrCode]);
+
+  useEffect(() => {
+    if (!activeSessionData?.session?.id || activeSessionData?.session?.status !== 'open') {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          loadQrCode(activeSessionData.session.id);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [activeSessionData?.session?.id, activeSessionData?.session?.status, loadQrCode]);
 
   async function handleOpenPeriod(periodId) {
     setDetailLoading(true);
     setDetailError(null);
     setActiveSessionData(null);
     setSessionError(null);
+    setQrData(null);
+    setQrError(null);
+    setCountdown(0);
     try {
       const period = await getPeriodById(periodId);
       setSelectedPeriod(period);
@@ -85,6 +135,9 @@ export default function TeacherDashboard({ user, onSignOut }) {
   function handleBackToTimetable() {
     setSelectedPeriod(null);
     setActiveSessionData(null);
+    setQrData(null);
+    setQrError(null);
+    setCountdown(0);
     setDetailError(null);
     setSessionError(null);
     loadSchedule(selectedDate);
@@ -158,9 +211,62 @@ export default function TeacherDashboard({ user, onSignOut }) {
                       </View>
                     ))}
                   </View>
-                  <Text style={styles.attendanceHint}>
-                    Attendance session active. QR code generation ready for Task 08.
-                  </Text>
+                  <View style={styles.qrCard}>
+                    <View style={styles.qrHeaderRow}>
+                      <Text style={styles.qrTitle}>Classroom Check-In QR</Text>
+                      {countdown > 0 ? (
+                        <View style={[styles.timerBadge, countdown <= 5 && styles.timerBadgeExpiring]}>
+                          <Text style={[styles.timerText, countdown <= 5 && styles.timerTextExpiring]}>
+                            {qrLoading ? 'Refreshing...' : `Expires in ${countdown}s`}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    <Text style={styles.qrSubtitle}>
+                      Scan with student mobile app to record attendance
+                    </Text>
+
+                    {qrLoading && !qrData ? (
+                      <View style={styles.qrPlaceholder}>
+                        <ActivityIndicator size="large" color="#16a34a" />
+                        <Text style={styles.qrLoadingText}>Generating QR code...</Text>
+                      </View>
+                    ) : qrError ? (
+                      <View style={styles.qrErrorBox}>
+                        <Text style={styles.qrErrorText}>{qrError}</Text>
+                        <TouchableOpacity
+                          style={styles.qrRetryButton}
+                          onPress={() => loadQrCode(activeSessionData.session.id)}
+                        >
+                          <Text style={styles.qrRetryText}>Retry QR Code</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : qrData ? (
+                      <View style={styles.qrContentBox}>
+                        <Image
+                          source={{ uri: qrData.qrDataUrl }}
+                          style={styles.qrImage}
+                          resizeMode="contain"
+                          accessibilityLabel="Classroom QR Code"
+                        />
+                        <View style={styles.qrFooterRow}>
+                          <Text style={styles.qrCodeText}>
+                            Active Code: {qrData.code.substring(0, 8)}...
+                          </Text>
+                          <TouchableOpacity
+                            style={styles.qrRefreshButton}
+                            onPress={() => loadQrCode(activeSessionData.session.id)}
+                            disabled={qrLoading}
+                          >
+                            <Text style={styles.qrRefreshButtonText}>
+                              {qrLoading ? '...' : '↻ Refresh'}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    ) : null}
+                  </View>
                 </View>
               ) : (
                 <View>
@@ -681,5 +787,118 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     textTransform: 'capitalize',
+  },
+  qrCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    padding: 14,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    alignItems: 'center',
+  },
+  qrHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    marginBottom: 4,
+  },
+  qrTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#166534',
+  },
+  qrSubtitle: {
+    fontSize: 12,
+    color: '#64748b',
+    width: '100%',
+    marginBottom: 12,
+  },
+  timerBadge: {
+    backgroundColor: '#dcfce7',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#86efac',
+  },
+  timerBadgeExpiring: {
+    backgroundColor: '#fee2e2',
+    borderColor: '#fca5a5',
+  },
+  timerText: {
+    color: '#15803d',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  timerTextExpiring: {
+    color: '#b91c1c',
+  },
+  qrPlaceholder: {
+    height: 220,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  qrLoadingText: {
+    marginTop: 8,
+    fontSize: 12,
+    color: '#64748b',
+  },
+  qrErrorBox: {
+    padding: 12,
+    alignItems: 'center',
+  },
+  qrErrorText: {
+    color: '#b91c1c',
+    fontSize: 13,
+    marginBottom: 8,
+  },
+  qrRetryButton: {
+    backgroundColor: '#16a34a',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  qrRetryText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  qrContentBox: {
+    alignItems: 'center',
+    width: '100%',
+  },
+  qrImage: {
+    width: 220,
+    height: 220,
+    backgroundColor: '#ffffff',
+    borderRadius: 6,
+  },
+  qrFooterRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+  },
+  qrCodeText: {
+    fontSize: 11,
+    color: '#64748b',
+    fontFamily: 'monospace',
+  },
+  qrRefreshButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: '#f1f5f9',
+    borderRadius: 4,
+  },
+  qrRefreshButtonText: {
+    fontSize: 11,
+    color: '#334155',
+    fontWeight: '600',
   },
 });

@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { eq } from 'drizzle-orm';
 import { db, pool } from './db/index.js';
-import { users, sections, enrollments, periods, attendanceSessions } from './db/schema.js';
+import { users, sections, enrollments, periods, attendanceSessions, attendanceCodes } from './db/schema.js';
 import { hashPassword } from './auth.js';
 
 const SEED_USERS = [
@@ -76,6 +76,7 @@ async function seed() {
   const section = sectionRows[0];
 
   // 3. Enrollments (clean and ensure exactly student1 and student2)
+  await db.delete(attendanceCodes);
   await db.delete(attendanceSessions);
   await db.delete(enrollments).where(eq(enrollments.sectionId, section.id));
 
