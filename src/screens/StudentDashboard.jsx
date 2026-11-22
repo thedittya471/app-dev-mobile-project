@@ -8,8 +8,10 @@ import {
   ScrollView,
 } from 'react-native';
 import { getSchedule, getPeriodById } from '../services/schedule';
+import StudentScanScreen from './StudentScanScreen';
 
 export default function StudentDashboard({ user, onSignOut }) {
+  const [currentView, setCurrentView] = useState('today');
   const [scheduleData, setScheduleData] = useState({
     schedule: [],
     institutionDate: '',
@@ -58,6 +60,17 @@ export default function StudentDashboard({ user, onSignOut }) {
     setDetailError(null);
   }
 
+  if (currentView === 'scan') {
+    return (
+      <StudentScanScreen
+        onBack={() => {
+          setCurrentView('today');
+          loadSchedule(selectedDate);
+        }}
+      />
+    );
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.scrollContainer}>
       <View style={styles.card}>
@@ -71,6 +84,29 @@ export default function StudentDashboard({ user, onSignOut }) {
           </View>
           <TouchableOpacity style={styles.signOutButton} onPress={onSignOut}>
             <Text style={styles.signOutButtonText}>Sign Out</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.portalNav}>
+          <TouchableOpacity
+            style={[styles.portalTab, currentView === 'today' && styles.portalTabActive]}
+            onPress={() => setCurrentView('today')}
+          >
+            <Text
+              style={[styles.portalTabText, currentView === 'today' && styles.portalTabTextActive]}
+            >
+              📅 Today
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.portalTab, currentView === 'scan' && styles.portalTabActive]}
+            onPress={() => setCurrentView('scan')}
+          >
+            <Text
+              style={[styles.portalTabText, currentView === 'scan' && styles.portalTabTextActive]}
+            >
+              📷 Scan QR
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -100,10 +136,24 @@ export default function StudentDashboard({ user, onSignOut }) {
                 <Text style={styles.metaLabel}>Timezone:</Text>
                 <Text style={styles.metaValue}>{selectedPeriod.timezone}</Text>
               </View>
+
+              <TouchableOpacity
+                style={styles.scanActionButton}
+                onPress={() => setCurrentView('scan')}
+              >
+                <Text style={styles.scanActionButtonText}>📷 Scan Attendance QR</Text>
+              </TouchableOpacity>
             </View>
           </View>
         ) : (
           <View>
+            <TouchableOpacity
+              style={styles.scanBanner}
+              onPress={() => setCurrentView('scan')}
+            >
+              <Text style={styles.scanBannerText}>📷 Scan Classroom Attendance QR</Text>
+            </TouchableOpacity>
+
             <View style={styles.dateSelector}>
               <TouchableOpacity
                 style={[styles.dateTab, selectedDate === 'today' && styles.dateTabActive]}
@@ -494,5 +544,61 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#0f172a',
     fontWeight: '500',
+  },
+  portalNav: {
+    flexDirection: 'row',
+    marginBottom: 16,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9',
+    padding: 3,
+  },
+  portalTab: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: 6,
+  },
+  portalTabActive: {
+    backgroundColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowOffset: { width: 0, height: 1 },
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  portalTabText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#64748b',
+  },
+  portalTabTextActive: {
+    color: '#2563eb',
+  },
+  scanBanner: {
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  scanBannerText: {
+    color: '#1d4ed8',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  scanActionButton: {
+    marginTop: 14,
+    backgroundColor: '#2563eb',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  scanActionButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
