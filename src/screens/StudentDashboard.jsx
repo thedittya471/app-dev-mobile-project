@@ -8,6 +8,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { getSchedule, getPeriodById } from '../services/schedule';
+import { getStudentAttendance } from '../services/attendance';
 import StudentScanScreen from './StudentScanScreen';
 
 export default function StudentDashboard({ user, onSignOut }) {
@@ -24,6 +25,14 @@ export default function StudentDashboard({ user, onSignOut }) {
   const [error, setError] = useState(null);
   const [detailError, setDetailError] = useState(null);
 
+  const [attendanceData, setAttendanceData] = useState({
+    summary: { totalSessions: 0, presentSessions: 0, absentSessions: 0, percentage: 0 },
+    bySubject: [],
+    records: [],
+  });
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
+  const [attendanceError, setAttendanceError] = useState(null);
+
   const loadSchedule = useCallback(async (dateParam) => {
     setLoading(true);
     setError(null);
@@ -37,9 +46,28 @@ export default function StudentDashboard({ user, onSignOut }) {
     }
   }, []);
 
+  const loadAttendance = useCallback(async () => {
+    setAttendanceLoading(true);
+    setAttendanceError(null);
+    try {
+      const data = await getStudentAttendance();
+      setAttendanceData(data);
+    } catch (err) {
+      setAttendanceError(err.message || 'Failed to load attendance');
+    } finally {
+      setAttendanceLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadSchedule(selectedDate);
   }, [loadSchedule, selectedDate]);
+
+  useEffect(() => {
+    if (currentView === 'attendance') {
+      loadAttendance();
+    }
+  }, [currentView, loadAttendance]);
 
   async function handleOpenPeriod(periodId) {
     setDetailLoading(true);
@@ -66,6 +94,7 @@ export default function StudentDashboard({ user, onSignOut }) {
         onBack={() => {
           setCurrentView('today');
           loadSchedule(selectedDate);
+          loadAttendance();
         }}
       />
     );
@@ -99,6 +128,19 @@ export default function StudentDashboard({ user, onSignOut }) {
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
+            style={[styles.portalTab, currentView === 'attendance' && styles.portalTabActive]}
+            onPress={() => setCurrentView('attendance')}
+          >
+            <Text
+              style={[
+                styles.portalTabText,
+                currentView === 'attendance' && styles.portalTabTextActive,
+              ]}
+            >
+              📊 Attendance
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
             style={[styles.portalTab, currentView === 'scan' && styles.portalTabActive]}
             onPress={() => setCurrentView('scan')}
           >
@@ -110,7 +152,175 @@ export default function StudentDashboard({ user, onSignOut }) {
           </TouchableOpacity>
         </View>
 
-        {selectedPeriod ? (
+        {currentView === 'attendance' ? (
+          <View style={styles.attendanceContainer}>
+            <View style={styles.attendanceHeaderRow}>
+              <Text style={styles.sectionTitle}>My Attendance</Text>
+              <TouchableOpacity
+                style={styles.attendanceRefreshBtn}
+                onPress={loadAttendance}
+                disabled={attendanceLoading}
+              >
+                <Text style={styles.attendanceRefreshText}>
+                  {attendanceLoading ? 'Refreshing...' : '🔄 Refresh'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {attendanceLoading && !attendanceData.summary.totalSessions ? (
+              <View style={styles.stateBox}>
+                <ActivityIndicator size="small" color="#2563eb" />
+                <Text style={styles.stateText}>Loading attendance records...</Text>
+              </View>
+            ) : attendanceError ? (
+              <View style={[styles.stateBox, styles.errorBox]}>
+                <Text style={styles.errorText}>{attendanceError}</Text>
+                <TouchableOpacity style={styles.retryButton} onPress={loadAttendance}>
+                  <Text style={styles.retryButtonText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : attendanceData.summary.totalSessions === 0 ? (
+              <View style={[styles.stateBox, styles.emptyBox]}>
+                <Text style={styles.emptyIcon}>📊</Text>
+                <Text style={styles.emptyTitle}>No Attendance Records</Text>
+                <Text style={styles.emptySubtitle}>
+                  Finalized attendance records and subject percentages will appear here once teachers close class sessions.
+                </Text>
+                <TouchableOpacity style={styles.refreshButton} onPress={loadAttendance}>
+                  <Text style={styles.refreshButtonText}>Refresh</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View>
+                {/* Overall Summary Card */}
+                <View style={styles.summaryCard}>
+                  <View style={styles.summaryTop}>
+                    <Text style={styles.summaryPercentText}>
+                      {attendanceData.summary.percentage}%
+                    </Text>
+                    <Text style={styles.summaryLabel}>Overall Attendance</Text>
+                  </View>
+                  <View style={styles.progressBarBg}>
+                    <View
+                      style={[
+                        styles.progressBarFill,
+                        { width: `${Math.min(100, Math.max(0, attendanceData.summary.percentage))}%` },
+                      ]}
+                    />
+                  </View>
+                  <View style={styles.statsRow}>
+                    <View style={styles.statCol}>
+                      <Text style={styles.statNum}>{attendanceData.summary.totalSessions}</Text>
+                      <Text style={styles.statLabel}>Total Classes</Text>
+                    </View>
+                    <View style={styles.statCol}>
+                      <Text style={[styles.statNum, styles.statPresent]}>
+                        {attendanceData.summary.presentSessions}
+                      </Text>
+                      <Text style={styles.statLabel}>Present</Text>
+                    </View>
+                    <View style={styles.statCol}>
+                      <Text style={[styles.statNum, styles.statAbsent]}>
+                        {attendanceData.summary.absentSessions}
+                      </Text>
+                      <Text style={styles.statLabel}>Absent</Text>
+                    </View>
+                  </View>
+                </View>
+
+                {/* By Subject Section */}
+                <Text style={styles.subSectionTitle}>Attendance by Subject</Text>
+                <View style={styles.subjectList}>
+                  {attendanceData.bySubject.map((subj) => (
+                    <View key={subj.subject} style={styles.subjectCard}>
+                      <View style={styles.subjectTopRow}>
+                        <Text style={styles.subjectName}>{subj.subject}</Text>
+                        <View
+                          style={[
+                            styles.subjectBadge,
+                            subj.percentage >= 75
+                              ? styles.badgeGood
+                              : subj.percentage >= 50
+                              ? styles.badgeWarning
+                              : styles.badgeDanger,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.subjectBadgeText,
+                              subj.percentage >= 75
+                                ? styles.badgeTextGood
+                                : subj.percentage >= 50
+                                ? styles.badgeTextWarning
+                                : styles.badgeTextDanger,
+                            ]}
+                          >
+                            {subj.percentage}%
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={styles.subjectCountsText}>
+                        {subj.presentSessions} / {subj.totalSessions} sessions present
+                        {subj.absentSessions > 0 ? ` (${subj.absentSessions} absent)` : ''}
+                      </Text>
+                      <View style={styles.subjectProgressBarBg}>
+                        <View
+                          style={[
+                            styles.subjectProgressBarFill,
+                            {
+                              width: `${Math.min(100, Math.max(0, subj.percentage))}%`,
+                              backgroundColor:
+                                subj.percentage >= 75
+                                  ? '#16a34a'
+                                  : subj.percentage >= 50
+                                  ? '#d97706'
+                                  : '#dc2626',
+                            },
+                          ]}
+                        />
+                      </View>
+                    </View>
+                  ))}
+                </View>
+
+                {/* Recent Sessions List */}
+                <Text style={styles.subSectionTitle}>Recent Sessions</Text>
+                <View style={styles.recordList}>
+                  {attendanceData.records.map((rec) => (
+                    <View key={rec.id} style={styles.recordCard}>
+                      <View style={styles.recordDetails}>
+                        <Text style={styles.recordSubject}>{rec.subject}</Text>
+                        <Text style={styles.recordMeta}>
+                          {rec.date} • {rec.formattedTime}
+                        </Text>
+                        <Text style={styles.recordSection}>{rec.sectionName}</Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.recordStatusBadge,
+                          rec.status === 'present'
+                            ? styles.recordStatusPresent
+                            : styles.recordStatusAbsent,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.recordStatusText,
+                            rec.status === 'present'
+                              ? styles.recordStatusTextPresent
+                              : styles.recordStatusTextAbsent,
+                          ]}
+                        >
+                          {rec.status === 'present' ? '✓ Present' : '✕ Absent'}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+          </View>
+        ) : selectedPeriod ? (
           <View style={styles.detailContainer}>
             <TouchableOpacity
               style={styles.backButton}
@@ -600,5 +810,219 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  attendanceContainer: {
+    marginTop: 4,
+  },
+  attendanceHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  attendanceRefreshBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#eff6ff',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  attendanceRefreshText: {
+    fontSize: 12,
+    color: '#2563eb',
+    fontWeight: '600',
+  },
+  emptyIcon: {
+    fontSize: 36,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  summaryCard: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 16,
+    marginBottom: 16,
+  },
+  summaryTop: {
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  summaryPercentText: {
+    fontSize: 36,
+    fontWeight: 'bold',
+    color: '#0f172a',
+  },
+  summaryLabel: {
+    fontSize: 13,
+    color: '#64748b',
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  progressBarBg: {
+    height: 8,
+    backgroundColor: '#e2e8f0',
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginBottom: 14,
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#2563eb',
+    borderRadius: 4,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    paddingTop: 12,
+  },
+  statCol: {
+    alignItems: 'center',
+  },
+  statNum: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  statPresent: {
+    color: '#16a34a',
+  },
+  statAbsent: {
+    color: '#dc2626',
+  },
+  statLabel: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  subSectionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#334155',
+    marginBottom: 8,
+    marginTop: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  subjectList: {
+    gap: 8,
+    marginBottom: 16,
+  },
+  subjectCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 12,
+  },
+  subjectTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  subjectName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  subjectBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+  },
+  badgeGood: {
+    backgroundColor: '#dcfce7',
+  },
+  badgeWarning: {
+    backgroundColor: '#fef3c7',
+  },
+  badgeDanger: {
+    backgroundColor: '#fee2e2',
+  },
+  subjectBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  badgeTextGood: {
+    color: '#16a34a',
+  },
+  badgeTextWarning: {
+    color: '#d97706',
+  },
+  badgeTextDanger: {
+    color: '#dc2626',
+  },
+  subjectCountsText: {
+    fontSize: 12,
+    color: '#64748b',
+    marginBottom: 8,
+  },
+  subjectProgressBarBg: {
+    height: 6,
+    backgroundColor: '#f1f5f9',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  subjectProgressBarFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  recordList: {
+    gap: 8,
+  },
+  recordCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 12,
+  },
+  recordDetails: {
+    flex: 1,
+  },
+  recordSubject: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginBottom: 2,
+  },
+  recordMeta: {
+    fontSize: 12,
+    color: '#64748b',
+    marginBottom: 2,
+  },
+  recordSection: {
+    fontSize: 11,
+    color: '#94a3b8',
+  },
+  recordStatusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    marginLeft: 8,
+  },
+  recordStatusPresent: {
+    backgroundColor: '#dcfce7',
+  },
+  recordStatusAbsent: {
+    backgroundColor: '#fee2e2',
+  },
+  recordStatusText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  recordStatusTextPresent: {
+    color: '#16a34a',
+  },
+  recordStatusTextAbsent: {
+    color: '#dc2626',
   },
 });

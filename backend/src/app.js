@@ -999,3 +999,119 @@ app.post('/attendance/sessions/:id/records', requireAuth, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Student attendance history and by-subject summary
+app.get('/attendance/student', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ error: 'Access denied: only students can view student attendance' });
+    }
+
+    if (req.query.studentId && req.query.studentId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied: cannot view other students attendance' });
+    }
+
+    const studentId = req.user.id;
+
+    // Fetch all closed attendance sessions where student was on the roster
+    const rows = await db
+      .select({
+        sessionId: attendanceSessions.id,
+        sessionStatus: attendanceSessions.status,
+        sessionClosedAt: attendanceSessions.closedAt,
+        periodId: periods.id,
+        subject: periods.subject,
+        startTime: periods.startTime,
+        endTime: periods.endTime,
+        timezone: sections.timezone,
+        sectionName: sections.name,
+        rosterStatus: sessionRosters.status,
+        recordStatus: attendanceRecords.status,
+        recordMethod: attendanceRecords.method,
+        recordRecordedAt: attendanceRecords.recordedAt,
+        recordUpdatedAt: attendanceRecords.updatedAt,
+      })
+      .from(sessionRosters)
+      .innerJoin(attendanceSessions, eq(sessionRosters.sessionId, attendanceSessions.id))
+      .innerJoin(periods, eq(attendanceSessions.periodId, periods.id))
+      .innerJoin(sections, eq(periods.sectionId, sections.id))
+      .leftJoin(
+        attendanceRecords,
+        and(
+          eq(attendanceRecords.sessionId, attendanceSessions.id),
+          eq(attendanceRecords.studentId, sessionRosters.studentId)
+        )
+      )
+      .where(
+        and(
+          eq(sessionRosters.studentId, studentId),
+          eq(attendanceSessions.status, 'closed')
+        )
+      )
+      .orderBy(desc(periods.startTime));
+
+    const subjectMap = new Map();
+    let totalPresent = 0;
+    const totalSessions = rows.length;
+
+    const records = rows.map((r) => {
+      const tz = r.timezone || 'America/New_York';
+      const status = (r.recordStatus || r.rosterStatus || 'absent').toLowerCase();
+      const isPresent = status === 'present';
+      if (isPresent) {
+        totalPresent += 1;
+      }
+
+      if (!subjectMap.has(r.subject)) {
+        subjectMap.set(r.subject, {
+          subject: r.subject,
+          totalSessions: 0,
+          presentSessions: 0,
+          absentSessions: 0,
+          percentage: 0,
+        });
+      }
+      const group = subjectMap.get(r.subject);
+      group.totalSessions += 1;
+      if (isPresent) {
+        group.presentSessions += 1;
+      } else {
+        group.absentSessions += 1;
+      }
+
+      return {
+        id: r.sessionId,
+        sessionId: r.sessionId,
+        periodId: r.periodId,
+        subject: r.subject,
+        sectionName: r.sectionName,
+        date: getDateInTimezone(r.startTime, tz),
+        formattedTime: `${formatTimeInTimezone(r.startTime, tz)} - ${formatTimeInTimezone(r.endTime, tz)}`,
+        startTime: r.startTime,
+        endTime: r.endTime,
+        status: isPresent ? 'present' : 'absent',
+        recordedAt: r.recordRecordedAt || r.sessionClosedAt,
+      };
+    });
+
+    const bySubject = Array.from(subjectMap.values()).map((s) => ({
+      ...s,
+      percentage: s.totalSessions > 0 ? Math.round((s.presentSessions / s.totalSessions) * 100) : 0,
+    }));
+
+    const summary = {
+      totalSessions,
+      presentSessions: totalPresent,
+      absentSessions: totalSessions - totalPresent,
+      percentage: totalSessions > 0 ? Math.round((totalPresent / totalSessions) * 100) : 0,
+    };
+
+    res.status(200).json({
+      summary,
+      bySubject,
+      records,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
