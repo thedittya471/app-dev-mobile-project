@@ -44,7 +44,13 @@ app.use(
 
 app.use(express.json());
 
-function getDateInTimezone(dateObj, timezone = 'America/New_York') {
+const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+app.param('id', (req, res, next, id) => {
+  if (!UUID_PATTERN.test(id)) return res.status(404).json({ error: 'Resource not found' });
+  next();
+});
+
+function getDateInTimezone(dateObj, timezone = 'Asia/Kolkata') {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
     year: 'numeric',
@@ -53,7 +59,14 @@ function getDateInTimezone(dateObj, timezone = 'America/New_York') {
   }).format(new Date(dateObj));
 }
 
-function formatTimeInTimezone(dateObj, timezone = 'America/New_York') {
+function resolveScheduleDate(filterDate, today) {
+  if (filterDate !== 'tomorrow') return !filterDate || filterDate === 'today' ? today : filterDate;
+  const nextDay = new Date(`${today}T00:00:00Z`);
+  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+  return nextDay.toISOString().slice(0, 10);
+}
+
+function formatTimeInTimezone(dateObj, timezone = 'Asia/Kolkata') {
   return new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
     hour: 'numeric',
@@ -75,31 +88,36 @@ app.get('/health', async (req, res) => {
 // Authentication endpoints
 app.post('/auth/sign-in', async (req, res) => {
   const { email, password } = req.body || {};
-  if (!email || !password) {
+  if (typeof email !== 'string' || !email.trim() || typeof password !== 'string' || !password) {
     return res.status(400).json({ error: 'Email and password required' });
   }
 
-  const rows = await db.select().from(users).where(eq(users.email, email.trim().toLowerCase()));
-  if (!rows.length) {
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
+  try {
+    const rows = await db.select().from(users).where(eq(users.email, email.trim().toLowerCase()));
+    if (!rows.length) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
-  const user = rows[0];
-  const isValid = verifyPassword(password, user.passwordHash);
-  if (!isValid) {
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
+    const user = rows[0];
+    const isValid = verifyPassword(password, user.passwordHash);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
-  const sessionToken = await createSession(user.id);
-  res.status(200).json({
-    sessionToken,
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
-    },
-  });
+    const sessionToken = await createSession(user.id);
+    res.status(200).json({
+      sessionToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    console.error('Sign-in failed:', error.message);
+    res.status(503).json({ error: 'Sign-in service is temporarily unavailable' });
+  }
 });
 
 app.get('/auth/me', requireAuth, (req, res) => {
@@ -107,8 +125,13 @@ app.get('/auth/me', requireAuth, (req, res) => {
 });
 
 app.post('/auth/sign-out', requireAuth, async (req, res) => {
-  await deleteSession(req.sessionToken);
-  res.status(200).json({ success: true });
+  try {
+    await deleteSession(req.sessionToken);
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Sign-out failed:', error.message);
+    res.status(503).json({ error: 'Sign-in service is temporarily unavailable' });
+  }
 });
 
 // Explicit guard: users cannot change their role through the API
@@ -121,6 +144,16 @@ app.get('/schedule', requireAuth, async (req, res) => {
   try {
     const user = req.user;
     const filterDate = req.query.date;
+
+    if (filterDate !== undefined && (
+      typeof filterDate !== 'string' ||
+      (!['today', 'tomorrow'].includes(filterDate) &&
+        (!/^\d{4}-\d{2}-\d{2}$/.test(filterDate) ||
+          Number.isNaN(Date.parse(filterDate)) ||
+          new Date(filterDate).toISOString().slice(0, 10) !== filterDate))
+    )) {
+      return res.status(400).json({ error: 'Use today, tomorrow, or a date in YYYY-MM-DD format' });
+    }
 
     let results = [];
 
@@ -151,10 +184,14 @@ app.get('/schedule', requireAuth, async (req, res) => {
         .where(eq(enrollments.studentId, user.id));
 
       if (enrolledSections.length === 0) {
+        const institutionDate = getDateInTimezone(new Date());
         return res.status(200).json({
           schedule: [],
-          institutionDate: getDateInTimezone(new Date(), 'America/New_York'),
-          institutionTimezone: 'America/New_York',
+          timeline: [],
+          freePeriods: [],
+          institutionDate,
+          scheduleDate: resolveScheduleDate(filterDate, institutionDate),
+          institutionTimezone: 'Asia/Kolkata',
         });
       }
 
@@ -180,7 +217,7 @@ app.get('/schedule', requireAuth, async (req, res) => {
         .orderBy(asc(periods.startTime));
     }
 
-    const institutionTimezone = results[0]?.timezone || 'America/New_York';
+    const institutionTimezone = results[0]?.timezone || 'Asia/Kolkata';
     const institutionToday = getDateInTimezone(new Date(), institutionTimezone);
     const schoolDayStart = results[0]?.schoolDayStart || '09:00';
     const schoolDayEnd = results[0]?.schoolDayEnd || '17:00';
@@ -200,11 +237,7 @@ app.get('/schedule', requireAuth, async (req, res) => {
       };
     });
 
-    const targetDate = filterDate
-      ? filterDate === 'today'
-        ? institutionToday
-        : filterDate
-      : institutionToday;
+    const targetDate = resolveScheduleDate(filterDate, institutionToday);
 
     if (filterDate) {
       mapped = mapped.filter((p) => p.periodDate === targetDate);
@@ -243,6 +276,7 @@ app.get('/schedule', requireAuth, async (req, res) => {
       freePeriods,
       timeline,
       institutionDate: institutionToday,
+      scheduleDate: targetDate,
       institutionTimezone,
       schoolDayStart,
       schoolDayEnd,
@@ -302,7 +336,7 @@ app.get('/schedule/:id', requireAuth, async (req, res) => {
       }
     }
 
-    const periodTimezone = period.timezone || 'America/New_York';
+    const periodTimezone = period.timezone || 'Asia/Kolkata';
     const periodDate = getDateInTimezone(period.startTime, periodTimezone);
     const startFormatted = formatTimeInTimezone(period.startTime, periodTimezone);
     const endFormatted = formatTimeInTimezone(period.endTime, periodTimezone);
@@ -332,8 +366,8 @@ app.get('/schedule/:id', requireAuth, async (req, res) => {
 app.post('/attendance/sessions', requireAuth, async (req, res) => {
   try {
     const { periodId } = req.body || {};
-    if (!periodId) {
-      return res.status(400).json({ error: 'periodId required' });
+    if (typeof periodId !== 'string' || !UUID_PATTERN.test(periodId)) {
+      return res.status(400).json({ error: 'A valid periodId is required' });
     }
 
     // Role check
@@ -356,91 +390,57 @@ app.post('/attendance/sessions', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Access denied: not assigned teacher for this period' });
     }
 
-    // Check if session already exists
-    const existingSessions = await db
-      .select()
-      .from(attendanceSessions)
-      .where(eq(attendanceSessions.periodId, periodId));
+    const result = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(attendanceSessions)
+        .values({ periodId, status: 'open' })
+        .onConflictDoNothing({ target: attendanceSessions.periodId })
+        .returning();
 
-    if (existingSessions.length > 0) {
-      const existingSession = existingSessions[0];
-      const roster = await db
+      if (created) {
+        const enrolledStudents = await tx
+          .select({
+            studentId: enrollments.studentId,
+            studentName: users.name,
+            studentEmail: users.email,
+          })
+          .from(enrollments)
+          .innerJoin(users, eq(enrollments.studentId, users.id))
+          .where(eq(enrollments.sectionId, period.sectionId));
+
+        if (enrolledStudents.length) {
+          await tx.insert(sessionRosters).values(
+            enrolledStudents.map((student) => ({ ...student, sessionId: created.id, status: 'pending' }))
+          );
+        }
+      }
+
+      const session = created || (await tx.select().from(attendanceSessions)
+        .where(eq(attendanceSessions.periodId, periodId)))[0];
+      const roster = await tx
         .select()
         .from(sessionRosters)
-        .where(eq(sessionRosters.sessionId, existingSession.id))
+        .where(eq(sessionRosters.sessionId, session.id))
         .orderBy(asc(sessionRosters.studentName));
+      const checkedInCount = roster.filter((student) => student.status === 'present').length;
 
-      const checkedInCount = roster.filter((s) => s.status === 'present').length;
-      const pendingCount = roster.filter((s) => s.status === 'pending').length;
-
-      return res.status(200).json({
-        session: existingSession,
+      return {
+        created: !!created,
+        session,
         roster,
         summary: {
           totalEnrolled: roster.length,
           checkedInCount,
-          pendingCount,
+          pendingCount: roster.filter((student) => student.status === 'pending').length,
           percentage: roster.length ? Math.round((checkedInCount / roster.length) * 100) : 0,
-        },
-        message: 'Existing attendance session retrieved',
-      });
-    }
-
-    // Create session and capture roster snapshot in one transaction
-    const result = await db.transaction(async (tx) => {
-      const [newSession] = await tx
-        .insert(attendanceSessions)
-        .values({
-          periodId,
-          openedAt: new Date(),
-          status: 'open',
-        })
-        .returning();
-
-      const enrolledStudents = await tx
-        .select({
-          studentId: enrollments.studentId,
-          studentName: users.name,
-          studentEmail: users.email,
-        })
-        .from(enrollments)
-        .innerJoin(users, eq(enrollments.studentId, users.id))
-        .where(eq(enrollments.sectionId, period.sectionId))
-        .orderBy(asc(users.name));
-
-      let roster = [];
-      if (enrolledStudents.length > 0) {
-        roster = await tx
-          .insert(sessionRosters)
-          .values(
-            enrolledStudents.map((s) => ({
-              sessionId: newSession.id,
-              studentId: s.studentId,
-              studentName: s.studentName,
-              studentEmail: s.studentEmail,
-              status: 'pending',
-            }))
-          )
-          .returning();
-      }
-
-      return {
-        session: newSession,
-        roster,
-        summary: {
-          totalEnrolled: roster.length,
-          checkedInCount: 0,
-          pendingCount: roster.length,
-          percentage: 0,
         },
       };
     });
 
-    res.status(201).json({
-      session: result.session,
-      roster: result.roster,
-      summary: result.summary,
-      message: 'Attendance session opened successfully',
+    const { created, ...sessionData } = result;
+    res.status(created ? 201 : 200).json({
+      ...sessionData,
+      message: created ? 'Attendance session opened successfully' : 'Existing attendance session retrieved',
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -497,6 +497,37 @@ app.get('/attendance/sessions/:id', requireAuth, async (req, res) => {
 
 const QR_CODE_TTL_SECONDS = 20;
 
+async function getActiveCode(tx, sessionId) {
+  const now = new Date();
+  const [activeCode] = await tx.select().from(attendanceCodes)
+    .where(and(eq(attendanceCodes.sessionId, sessionId), gt(attendanceCodes.expiresAt, now)))
+    .orderBy(desc(attendanceCodes.expiresAt))
+    .limit(1);
+  if (activeCode) return activeCode;
+
+  const [newCode] = await tx.insert(attendanceCodes).values({
+    sessionId,
+    code: crypto.randomBytes(16).toString('hex'),
+    expiresAt: new Date(now.getTime() + QR_CODE_TTL_SECONDS * 1000),
+    createdAt: now,
+  }).returning();
+  return newCode;
+}
+
+async function renderAttendanceCode({ sessionId, code, expiresAt }, width) {
+  const qrPayload = JSON.stringify({ sessionId, code });
+  const qrDataUrl = await QRCode.toDataURL(qrPayload, { width, margin: 4, errorCorrectionLevel: 'M' });
+  const serverTime = new Date();
+  return {
+    code,
+    qrPayload,
+    qrDataUrl,
+    expiresAt,
+    expiresInSeconds: Math.max(0, Math.ceil((expiresAt - serverTime) / 1000)),
+    serverTime,
+  };
+}
+
 app.get('/attendance/sessions/:id/code', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
@@ -521,74 +552,15 @@ app.get('/attendance/sessions/:id/code', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Access denied: only assigned teacher can access classroom QR code' });
     }
 
-    // Check if session is open
-    if (session.status !== 'open') {
-      return res.status(400).json({ error: 'Attendance session is closed' });
-    }
-
-    const now = new Date();
-
-    // Check for existing active code that has not expired
-    // Reuse current code until it expires so multiple displays stay in sync
-    const activeCodes = await db
-      .select()
-      .from(attendanceCodes)
-      .where(
-        and(
-          eq(attendanceCodes.sessionId, session.id),
-          gt(attendanceCodes.expiresAt, now)
-        )
-      )
-      .orderBy(desc(attendanceCodes.expiresAt))
-      .limit(1);
-
-    let activeCode;
-    if (activeCodes.length > 0) {
-      activeCode = activeCodes[0];
-    } else {
-      // Generate unpredictable code
-      const code = crypto.randomBytes(16).toString('hex');
-      const expiresAt = new Date(now.getTime() + QR_CODE_TTL_SECONDS * 1000);
-
-      const [newCode] = await db
-        .insert(attendanceCodes)
-        .values({
-          sessionId: session.id,
-          code,
-          expiresAt,
-          createdAt: now,
-        })
-        .returning();
-
-      activeCode = newCode;
-    }
-
-    // Payload limited strictly to what check-in needs
-    const qrPayload = JSON.stringify({
-      sessionId: session.id,
-      code: activeCode.code,
+    const activeCode = await db.transaction(async (tx) => {
+      const [currentSession] = await tx.select().from(attendanceSessions)
+        .where(eq(attendanceSessions.id, session.id)).for('update');
+      if (currentSession.status !== 'open') return null;
+      return getActiveCode(tx, session.id);
     });
 
-    const qrDataUrl = await QRCode.toDataURL(qrPayload, {
-      width: 280,
-      margin: 2,
-      errorCorrectionLevel: 'M',
-    });
-
-    const expiresInSeconds = Math.max(
-      0,
-      Math.round((new Date(activeCode.expiresAt).getTime() - Date.now()) / 1000)
-    );
-
-    res.status(200).json({
-      sessionId: session.id,
-      code: activeCode.code,
-      qrPayload,
-      qrDataUrl,
-      expiresAt: activeCode.expiresAt,
-      expiresInSeconds,
-      serverTime: new Date().toISOString(),
-    });
+    if (!activeCode) return res.status(400).json({ error: 'Attendance session is closed' });
+    res.status(200).json({ sessionId: session.id, ...await renderAttendanceCode(activeCode, 280) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -623,88 +595,31 @@ app.get('/attendance/sessions/:id/summary', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Access denied: only assigned teacher can view classroom projector summary' });
     }
 
-    // Retrieve aggregate counts only (strictly omits individual student attendance)
-    const rosterRows = await db
-      .select({
-        status: sessionRosters.status,
-      })
-      .from(sessionRosters)
-      .where(eq(sessionRosters.sessionId, session.id));
+    const { currentSession, rosterRows, activeCode } = await db.transaction(async (tx) => {
+      const [currentSession] = await tx.select().from(attendanceSessions)
+        .where(eq(attendanceSessions.id, session.id)).for('update');
+      const rosterRows = await tx.select({ status: sessionRosters.status })
+        .from(sessionRosters).where(eq(sessionRosters.sessionId, session.id));
+      const activeCode = currentSession.status === 'open' ? await getActiveCode(tx, session.id) : null;
+      return { currentSession, rosterRows, activeCode };
+    });
 
     const totalEnrolled = rosterRows.length;
     const checkedInCount = rosterRows.filter((r) => r.status === 'present').length;
     const absentCount = rosterRows.filter((r) => r.status === 'absent').length;
     const pendingCount = rosterRows.filter((r) => r.status === 'pending').length;
     const percentage = totalEnrolled ? Math.round((checkedInCount / totalEnrolled) * 100) : 0;
+    const qr = activeCode ? await renderAttendanceCode(activeCode, 380) : null;
 
-    let qr = null;
-
-    if (session.status === 'open') {
-      const now = new Date();
-      const activeCodes = await db
-        .select()
-        .from(attendanceCodes)
-        .where(
-          and(
-            eq(attendanceCodes.sessionId, session.id),
-            gt(attendanceCodes.expiresAt, now)
-          )
-        )
-        .orderBy(desc(attendanceCodes.expiresAt))
-        .limit(1);
-
-      let activeCode;
-      if (activeCodes.length > 0) {
-        activeCode = activeCodes[0];
-      } else {
-        const code = crypto.randomBytes(16).toString('hex');
-        const expiresAt = new Date(now.getTime() + QR_CODE_TTL_SECONDS * 1000);
-        const [newCode] = await db
-          .insert(attendanceCodes)
-          .values({
-            sessionId: session.id,
-            code,
-            expiresAt,
-            createdAt: now,
-          })
-          .returning();
-        activeCode = newCode;
-      }
-
-      const qrPayload = JSON.stringify({
-        sessionId: session.id,
-        code: activeCode.code,
-      });
-
-      const qrDataUrl = await QRCode.toDataURL(qrPayload, {
-        width: 380,
-        margin: 2,
-        errorCorrectionLevel: 'M',
-      });
-
-      const expiresInSeconds = Math.max(
-        0,
-        Math.round((new Date(activeCode.expiresAt).getTime() - Date.now()) / 1000)
-      );
-
-      qr = {
-        code: activeCode.code,
-        qrPayload,
-        qrDataUrl,
-        expiresAt: activeCode.expiresAt,
-        expiresInSeconds,
-      };
-    }
-
-    const tz = section.timezone || 'America/New_York';
+    const tz = section.timezone || 'Asia/Kolkata';
 
     res.status(200).json({
       session: {
         id: session.id,
         periodId: session.periodId,
-        status: session.status,
+        status: currentSession.status,
         openedAt: session.openedAt,
-        closedAt: session.closedAt,
+        closedAt: currentSession.closedAt,
       },
       period: {
         id: period.id,
@@ -751,12 +666,11 @@ app.post('/attendance/check-in', requireAuth, async (req, res) => {
       }
     }
 
-    if (!sessionId || !code) {
+    if (typeof sessionId !== 'string' || typeof code !== 'string' || !sessionId || !code) {
       return res.status(400).json({ error: 'sessionId and code are required' });
     }
 
-    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!UUID_REGEX.test(sessionId)) {
+    if (!UUID_PATTERN.test(sessionId)) {
       return res.status(400).json({ error: 'Invalid sessionId format' });
     }
 
@@ -811,85 +725,52 @@ app.post('/attendance/check-in', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Student is not enrolled in this session roster' });
     }
 
-    // 4. Check for existing record (repeat submission / concurrent repeat)
-    const existingRecords = await db
-      .select()
-      .from(attendanceRecords)
-      .where(
-        and(
-          eq(attendanceRecords.sessionId, sessionId),
-          eq(attendanceRecords.studentId, studentId)
-        )
-      );
-
-    if (existingRecords.length > 0) {
-      return res.status(200).json({
-        record: existingRecords[0],
-        message: 'Attendance already recorded',
-        repeated: true,
-      });
-    }
-
-    // 5. Insert attendance record in transaction and update roster status
-    const savedRecord = await db.transaction(async (tx) => {
-      // Re-verify session is still open within transaction to coordinate with closure
+    const result = await db.transaction(async (tx) => {
       const [currentSession] = await tx
         .select()
         .from(attendanceSessions)
-        .where(eq(attendanceSessions.id, sessionId));
+        .where(eq(attendanceSessions.id, sessionId))
+        .for('update');
 
       if (!currentSession || currentSession.status !== 'open') {
-        const err = new Error('Attendance session is closed');
-        err.statusCode = 400;
-        throw err;
+        throw Object.assign(new Error('Attendance session is closed'), { statusCode: 400 });
       }
 
-      const inserted = await tx
+      const recordedAt = new Date();
+      if (new Date(codeRecord.expiresAt) <= recordedAt) {
+        throw Object.assign(new Error('Attendance code has expired'), { statusCode: 400 });
+      }
+
+      const [existing] = await tx
+        .select()
+        .from(attendanceRecords)
+        .where(and(eq(attendanceRecords.sessionId, sessionId), eq(attendanceRecords.studentId, studentId)));
+
+      if (existing && existing.status !== 'pending') {
+        if (existing.status !== 'present') {
+          throw Object.assign(new Error('Your attendance was marked by the teacher. Ask them to review it.'), { statusCode: 409 });
+        }
+        return { record: existing, message: 'Attendance already recorded', repeated: true };
+      }
+
+      const [record] = await tx
         .insert(attendanceRecords)
-        .values({
-          sessionId,
-          studentId,
-          status: 'present',
-          recordedAt: now,
-          method: 'qr_scan',
+        .values({ sessionId, studentId, status: 'present', recordedAt, method: 'qr_scan' })
+        .onConflictDoUpdate({
+          target: [attendanceRecords.sessionId, attendanceRecords.studentId],
+          set: { status: 'present', recordedAt, method: 'qr_scan', updatedAt: recordedAt },
         })
-        .onConflictDoNothing()
         .returning();
-
-      let record;
-      if (inserted.length > 0) {
-        record = inserted[0];
-      } else {
-        const [found] = await tx
-          .select()
-          .from(attendanceRecords)
-          .where(
-            and(
-              eq(attendanceRecords.sessionId, sessionId),
-              eq(attendanceRecords.studentId, studentId)
-            )
-          );
-        record = found;
-      }
 
       await tx
         .update(sessionRosters)
         .set({ status: 'present' })
-        .where(
-          and(
-            eq(sessionRosters.sessionId, sessionId),
-            eq(sessionRosters.studentId, studentId)
-          )
-        );
+        .where(and(eq(sessionRosters.sessionId, sessionId), eq(sessionRosters.studentId, studentId)));
 
-      return record;
+      return { record, message: 'Attendance check-in confirmed', repeated: false };
     });
 
-    res.status(201).json({
-      record: savedRecord,
-      message: 'Attendance check-in confirmed',
-      repeated: false,
-    });
+    res.status(result.repeated ? 200 : 201).json(result);
   } catch (err) {
     res.status(err.statusCode || 500).json({ error: err.message });
   }
@@ -955,51 +836,56 @@ app.post('/attendance/sessions/:id/close', requireAuth, async (req, res) => {
           status: 'closed',
           closedAt: now,
         })
-        .where(eq(attendanceSessions.id, session.id))
+        .where(and(eq(attendanceSessions.id, session.id), eq(attendanceSessions.status, 'open')))
         .returning();
 
-      // 2. Expire all attendance codes for this session
-      await tx
-        .update(attendanceCodes)
-        .set({ expiresAt: now })
-        .where(eq(attendanceCodes.sessionId, session.id));
-
-      // 3. Find pending roster entries
-      const pendingStudents = await tx
-        .select()
-        .from(sessionRosters)
-        .where(
-          and(
-            eq(sessionRosters.sessionId, session.id),
-            eq(sessionRosters.status, 'pending')
-          )
-        );
-
-      // 4. Finalize pending students as absent in attendanceRecords
-      if (pendingStudents.length > 0) {
+      if (closedSession) {
+        // 2. Expire all attendance codes for this session
         await tx
-          .insert(attendanceRecords)
-          .values(
-            pendingStudents.map((s) => ({
-              sessionId: session.id,
-              studentId: s.studentId,
-              status: 'absent',
-              recordedAt: now,
-              method: 'finalized_absence',
-            }))
-          )
-          .onConflictDoNothing();
+          .update(attendanceCodes)
+          .set({ expiresAt: now })
+          .where(eq(attendanceCodes.sessionId, session.id));
 
-        // 5. Update roster entries status to absent
-        await tx
-          .update(sessionRosters)
-          .set({ status: 'absent' })
+        // 3. Find pending roster entries
+        const pendingStudents = await tx
+          .select()
+          .from(sessionRosters)
           .where(
             and(
               eq(sessionRosters.sessionId, session.id),
               eq(sessionRosters.status, 'pending')
             )
           );
+
+        // 4. Finalize pending students as absent in attendanceRecords
+        if (pendingStudents.length > 0) {
+          await tx
+            .insert(attendanceRecords)
+            .values(
+              pendingStudents.map((s) => ({
+                sessionId: session.id,
+                studentId: s.studentId,
+                status: 'absent',
+                recordedAt: now,
+                method: 'finalized_absence',
+              }))
+            )
+            .onConflictDoUpdate({
+              target: [attendanceRecords.sessionId, attendanceRecords.studentId],
+              set: { status: 'absent', method: 'finalized_absence', updatedAt: now },
+            });
+
+          // 5. Update roster entries status to absent
+          await tx
+            .update(sessionRosters)
+            .set({ status: 'absent' })
+            .where(
+              and(
+                eq(sessionRosters.sessionId, session.id),
+                eq(sessionRosters.status, 'pending')
+              )
+            );
+        }
       }
 
       // 6. Return finalized roster
@@ -1013,7 +899,7 @@ app.post('/attendance/sessions/:id/close', requireAuth, async (req, res) => {
       const absentCount = finalizedRoster.filter((s) => s.status === 'absent').length;
 
       return {
-        session: closedSession,
+        session: closedSession || (await tx.select().from(attendanceSessions).where(eq(attendanceSessions.id, session.id)))[0],
         roster: finalizedRoster,
         summary: {
           totalEnrolled: finalizedRoster.length,
@@ -1041,8 +927,8 @@ app.post('/attendance/sessions/:id/records', requireAuth, async (req, res) => {
     const { id } = req.params;
     const { studentId, status } = req.body || {};
 
-    if (!studentId || !status) {
-      return res.status(400).json({ error: 'studentId and status are required' });
+    if (typeof studentId !== 'string' || !UUID_PATTERN.test(studentId)) {
+      return res.status(400).json({ error: 'A valid studentId is required' });
     }
 
     if (!['present', 'absent', 'pending'].includes(status)) {
@@ -1085,9 +971,16 @@ app.post('/attendance/sessions/:id/records', requireAuth, async (req, res) => {
     }
 
     const now = new Date();
-    const method = session.status === 'open' ? 'teacher_manual' : 'teacher_correction';
 
     const result = await db.transaction(async (tx) => {
+      const [currentSession] = await tx
+        .select()
+        .from(attendanceSessions)
+        .where(eq(attendanceSessions.id, session.id))
+        .for('update');
+      if (currentSession.status === 'closed' && status === 'pending') return null;
+      const method = currentSession.status === 'open' ? 'teacher_manual' : 'teacher_correction';
+
       // 1. Update sessionRoster status
       await tx
         .update(sessionRosters)
@@ -1168,6 +1061,10 @@ app.post('/attendance/sessions/:id/records', requireAuth, async (req, res) => {
       };
     });
 
+    if (!result) {
+      return res.status(400).json({ error: 'Closed sessions require a present or absent status' });
+    }
+
     res.status(200).json({
       record: result.record,
       roster: result.roster,
@@ -1234,7 +1131,7 @@ app.get('/attendance/student', requireAuth, async (req, res) => {
     const totalSessions = rows.length;
 
     const records = rows.map((r) => {
-      const tz = r.timezone || 'America/New_York';
+      const tz = r.timezone || 'Asia/Kolkata';
       const status = (r.recordStatus || r.rosterStatus || 'absent').toLowerCase();
       const isPresent = status === 'present';
       if (isPresent) {

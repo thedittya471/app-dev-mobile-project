@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -7,137 +7,67 @@ import {
   ActivityIndicator,
   Image,
   ScrollView,
+  useWindowDimensions,
 } from 'react-native';
 import { getSessionSummary } from '../services/attendance';
+import useQrCountdown from '../hooks/useQrCountdown';
 
-export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) {
-  const [loading, setLoading] = useState(true);
+export default function ProjectorScreen({ sessionId, onBack, onSignOut }) {
   const [error, setError] = useState(null);
-  const [errorStatus, setErrorStatus] = useState(null);
   const [data, setData] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [networkInterrupted, setNetworkInterrupted] = useState(false);
-  const [countdown, setCountdown] = useState(0);
+  const refresh = useRef(null);
+  const { width } = useWindowDimensions();
+  const countdown = useQrCountdown(data?.qr);
 
-  const loadData = useCallback(async (isManualRefresh = false) => {
-    if (!sessionId) {
-      setError('No attendance session specified');
-      setErrorStatus(404);
-      setLoading(false);
-      return;
-    }
-
-    if (isManualRefresh) {
-      setRefreshing(true);
-    }
-
-    try {
-      const summaryData = await getSessionSummary(sessionId);
-      setData(summaryData);
-      setNetworkInterrupted(false);
-      setError(null);
-      setErrorStatus(null);
-    } catch (err) {
-      if (!data) {
-        setError(err.message || 'Failed to load classroom projector view');
-        setErrorStatus(err.status || 500);
-      } else {
-        // If data was already loaded, mark network interrupted while keeping display
-        setNetworkInterrupted(true);
-      }
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [sessionId, data]);
-
-  // Initial load
   useEffect(() => {
-    let mounted = true;
+    if (!sessionId) return;
+    const controller = new AbortController();
+    let busy = false;
+    let timer;
 
-    async function initialFetch() {
-      if (!sessionId) {
-        setError('No attendance session specified');
-        setErrorStatus(404);
-        setLoading(false);
-        return;
-      }
-
-      setLoading(true);
+    async function poll(manual = false) {
+      if (busy) return;
+      busy = true;
+      clearTimeout(timer);
+      if (manual) setRefreshing(true);
       try {
-        const summaryData = await getSessionSummary(sessionId);
-        if (mounted) {
-          setData(summaryData);
-          setNetworkInterrupted(false);
-          setError(null);
-          setErrorStatus(null);
-        }
-      } catch (err) {
-        if (mounted) {
-          setError(err.message || 'Failed to load classroom projector view');
-          setErrorStatus(err.status || 500);
-        }
+        const result = await getSessionSummary(sessionId, controller.signal);
+        if (controller.signal.aborted) return;
+        setData({
+          ...result,
+          qr: result.qr && { ...result.qr, receivedAt: Date.now() },
+        });
+        setError(null);
+        if (result.session.status === 'open') timer = setTimeout(poll, 3000);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setError(error);
+        if (![401, 403, 404].includes(error.status)) timer = setTimeout(poll, 3000);
       } finally {
-        if (mounted) setLoading(false);
+        busy = false;
+        if (manual && !controller.signal.aborted) setRefreshing(false);
       }
     }
 
-    initialFetch();
-
+    refresh.current = () => poll(true);
+    poll();
     return () => {
-      mounted = false;
+      controller.abort();
+      clearTimeout(timer);
+      refresh.current = null;
     };
   }, [sessionId]);
 
-  // Polling every 3 seconds while projector view is open and session is open
-  // Polling is cancelled when leaving the page (component unmount) or after session closure
-  useEffect(() => {
-    if (!sessionId || data?.session?.status === 'closed') {
-      return;
-    }
-
-    const intervalId = setInterval(async () => {
-      try {
-        const summaryData = await getSessionSummary(sessionId);
-        setData(summaryData);
-        setNetworkInterrupted(false);
-      } catch {
-        setNetworkInterrupted(true);
-      }
-    }, 3000);
-
-    return () => {
-      clearInterval(intervalId);
-    };
-  }, [sessionId, data?.session?.status]);
-
-  // Expiry countdown timer
-  useEffect(() => {
-    if (!data?.qr?.expiresAt || data?.session?.status === 'closed') {
-      setCountdown(0);
-      return;
-    }
-
-    function checkExpiry() {
-      const remaining = Math.max(
-        0,
-        Math.round((new Date(data.qr.expiresAt).getTime() - Date.now()) / 1000)
-      );
-      setCountdown(remaining);
-    }
-
-    checkExpiry();
-    const timerId = setInterval(checkExpiry, 1000);
-
-    return () => {
-      clearInterval(timerId);
-    };
-  }, [data?.qr?.expiresAt, data?.session?.status]);
+  const loading = sessionId && !data && !error;
+  const errorStatus = error?.status;
+  const networkInterrupted = !!error;
+  const loadData = () => refresh.current?.();
 
   if (loading) {
     return (
       <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color="#2563eb" />
+        <ActivityIndicator size="large" color="#5ab9fc" />
         <Text style={styles.loadingText}>Loading classroom projector...</Text>
       </View>
     );
@@ -150,9 +80,9 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
           <Text style={styles.errorIcon}>🚫</Text>
           <Text style={styles.errorCardTitle}>Inaccessible Session</Text>
           <Text style={styles.errorCardMessage}>
-            {error || 'Access denied: only assigned teacher can view classroom projector'}
+            {error?.message || 'Access denied: only assigned teacher can view classroom projector'}
           </Text>
-          <TouchableOpacity style={styles.primaryButton} onPress={onBack}>
+          <TouchableOpacity accessibilityRole="button" style={styles.primaryButton} onPress={onBack}>
             <Text style={styles.primaryButtonText}>← Back to Dashboard</Text>
           </TouchableOpacity>
         </View>
@@ -167,9 +97,9 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
           <Text style={styles.errorIcon}>🔍</Text>
           <Text style={styles.errorCardTitle}>Session Not Found</Text>
           <Text style={styles.errorCardMessage}>
-            {error || 'The requested attendance session does not exist.'}
+            {error?.message || 'The requested attendance session does not exist.'}
           </Text>
-          <TouchableOpacity style={styles.primaryButton} onPress={onBack}>
+          <TouchableOpacity accessibilityRole="button" style={styles.primaryButton} onPress={onBack}>
             <Text style={styles.primaryButtonText}>← Back to Dashboard</Text>
           </TouchableOpacity>
         </View>
@@ -177,18 +107,18 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
     );
   }
 
-  if (error && !data) {
+  if (error && (!data || errorStatus === 401)) {
     return (
       <View style={styles.centerContainer}>
         <View style={styles.errorCard}>
           <Text style={styles.errorIcon}>⚠️</Text>
           <Text style={styles.errorCardTitle}>Display Error</Text>
-          <Text style={styles.errorCardMessage}>{error}</Text>
+          <Text style={styles.errorCardMessage}>{error.message}</Text>
           <View style={styles.buttonRow}>
-            <TouchableOpacity style={styles.primaryButton} onPress={() => loadData(false)}>
+            <TouchableOpacity accessibilityRole="button" style={styles.primaryButton} onPress={loadData}>
               <Text style={styles.primaryButtonText}>↻ Retry</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.secondaryButton} onPress={onBack}>
+            <TouchableOpacity accessibilityRole="button" style={styles.secondaryButton} onPress={onBack}>
               <Text style={styles.secondaryButtonText}>Back</Text>
             </TouchableOpacity>
           </View>
@@ -201,14 +131,17 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
   const period = data?.period || {};
   const summary = data?.summary || { totalEnrolled: 0, checkedInCount: 0, absentCount: 0, percentage: 0 };
   const qr = data?.qr;
-  const isQrExpired = countdown <= 0 || (qr?.expiresAt && new Date(qr.expiresAt).getTime() <= Date.now());
+  const isQrExpired = countdown <= 0;
+  const wide = width >= 760;
+  const qrSize = Math.min(wide ? 340 : 280, Math.max(140, width - 120));
+  const qrDimensions = { width: qrSize, height: qrSize };
 
   return (
     <ScrollView contentContainerStyle={styles.scrollContainer}>
       <View style={styles.projectorFrame}>
         {/* Top Navbar */}
         <View style={styles.navBar}>
-          <TouchableOpacity style={styles.backButton} onPress={onBack}>
+          <TouchableOpacity accessibilityRole="button" style={styles.backButton} onPress={onBack}>
             <Text style={styles.backButtonText}>{"← Dashboard"}</Text>
           </TouchableOpacity>
 
@@ -221,9 +154,9 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
           </View>
 
           <View style={styles.navRight}>
-            <TouchableOpacity
+            <TouchableOpacity accessibilityRole="button"
               style={styles.refreshButton}
-              onPress={() => loadData(true)}
+              onPress={loadData}
               disabled={refreshing}
             >
               <Text style={styles.refreshButtonText}>
@@ -231,7 +164,7 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
               </Text>
             </TouchableOpacity>
             {onSignOut ? (
-              <TouchableOpacity style={styles.signOutButton} onPress={onSignOut}>
+              <TouchableOpacity accessibilityRole="button" style={styles.signOutButton} onPress={onSignOut}>
                 <Text style={styles.signOutButtonText}>Sign Out</Text>
               </TouchableOpacity>
             ) : null}
@@ -241,9 +174,9 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
         {/* Network interrupted alert banner */}
         {networkInterrupted ? (
           <View style={styles.interruptedBanner}>
-            <ActivityIndicator size="small" color="#b45309" />
+            <ActivityIndicator size="small" color="#fbbf24" />
             <Text style={styles.interruptedBannerText}>
-              ⚠️ Network update interrupted. Retrying automatically...
+              Updates interrupted. Showing the last received count.
             </Text>
           </View>
         ) : null}
@@ -251,7 +184,7 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
         {/* Classroom Header */}
         <View style={styles.headerArea}>
           <Text style={styles.classroomTitle}>Classroom Projector</Text>
-          <Text style={styles.subjectTitle}>{period.subject || 'Class Session'}</Text>
+          <Text accessibilityRole="header" style={styles.subjectTitle}>{period.subject || 'Class Session'}</Text>
           <Text style={styles.periodMeta}>
             {period.sectionName} • {period.teacherName} • {period.date} ({period.formattedTime})
           </Text>
@@ -274,62 +207,48 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
             </View>
           </View>
         ) : (
-          <View style={styles.qrDisplayCard}>
+          <View style={[styles.qrDisplayCard, wide && styles.qrDisplayWide]}>
             <View style={styles.qrWrapper}>
               {/* Hide expired QR code if network interrupted or while refreshing */}
               {networkInterrupted && isQrExpired ? (
-                <View style={styles.qrExpiredBox}>
+                <View style={[styles.qrExpiredBox, qrDimensions]}>
                   <Text style={styles.qrExpiredIcon}>⌛</Text>
                   <Text style={styles.qrExpiredTitle}>QR Code Expired</Text>
                   <Text style={styles.qrExpiredText}>
                     Network interrupted. Hiding expired QR while retrying connection...
                   </Text>
-                  <ActivityIndicator size="small" color="#d97706" style={{ marginTop: 8 }} />
+                  <ActivityIndicator size="small" color="#fbbf24" style={{ marginTop: 8 }} />
                 </View>
               ) : isQrExpired && !networkInterrupted ? (
-                <View style={styles.qrFallbackBox}>
-                  <ActivityIndicator size="large" color="#2563eb" />
+                <View style={[styles.qrFallbackBox, qrDimensions]}>
+                  <ActivityIndicator size="large" color="#5ab9fc" />
                   <Text style={styles.qrFallbackText}>Refreshing QR code...</Text>
                 </View>
               ) : qr?.qrDataUrl ? (
                 <Image
                   source={{ uri: qr.qrDataUrl }}
-                  style={styles.qrImage}
+                  style={[styles.qrImage, qrDimensions]}
                   resizeMode="contain"
                   accessibilityLabel="Classroom Projector QR Code"
                 />
               ) : (
-                <View style={styles.qrFallbackBox}>
-                  <ActivityIndicator size="large" color="#2563eb" />
+                <View style={[styles.qrFallbackBox, qrDimensions]}>
+                  <ActivityIndicator size="large" color="#5ab9fc" />
                   <Text style={styles.qrFallbackText}>Generating QR code...</Text>
                 </View>
               )}
             </View>
 
-            <Text style={styles.scanInstruction}>
-              Scan with your student mobile app to check in
-            </Text>
-
-            <View style={[styles.timerBadge, countdown <= 5 && styles.timerBadgeExpiring]}>
-              <Text style={[styles.timerText, countdown <= 5 && styles.timerTextExpiring]}>
-                {networkInterrupted
-                  ? isQrExpired
-                    ? 'Offline • Reconnecting...'
-                    : `Expires in ${countdown}s (Offline)`
-                  : countdown > 0
-                  ? `Active • Expires in ${countdown}s`
-                  : 'Refreshing code...'}
-              </Text>
-            </View>
-
-            {/* Attendance Progress Summary (no individual student names) */}
             <View style={styles.summaryBarArea}>
-              <View style={styles.summaryBarHeader}>
-                <Text style={styles.summaryBarLabel}>Checked In</Text>
-                <Text style={styles.summaryBarValue}>
-                  {summary.checkedInCount} of {summary.totalEnrolled} enrolled ({summary.percentage}%)
-                </Text>
-              </View>
+              <Text style={styles.scanInstruction}>Scan to check in</Text>
+              <Text style={styles.scanDetail}>Open Scan QR in the student app.</Text>
+              <Text style={[styles.timerText, countdown <= 5 && styles.timerTextExpiring]}>
+                {countdown > 0 ? `Code refreshes in ${countdown}s` : 'Waiting for an active code'}
+              </Text>
+              <Text style={styles.summaryBarValue} accessibilityLiveRegion="polite">
+                {summary.checkedInCount} / {summary.totalEnrolled}
+              </Text>
+              <Text style={styles.summaryBarLabel}>Checked in · {summary.percentage}%</Text>
               <View style={styles.progressBarTrack}>
                 <View
                   style={[
@@ -342,14 +261,6 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
           </View>
         )}
 
-        <View style={styles.footerRow}>
-          <Text style={styles.footerNote}>
-            {user ? `Signed in as ${user.name} (${user.email})` : ''}
-          </Text>
-          <Text style={styles.privacyNote}>
-            🛡️ Privacy Protected: Individual student names and attendance details are omitted from this display.
-          </Text>
-        </View>
       </View>
     </ScrollView>
   );
@@ -357,11 +268,12 @@ export default function ProjectorScreen({ sessionId, user, onBack, onSignOut }) 
 
 const styles = StyleSheet.create({
   scrollContainer: {
-    paddingVertical: 20,
+    paddingVertical: 24,
     paddingHorizontal: 16,
     alignItems: 'center',
     width: '100%',
     minHeight: '100%',
+    backgroundColor: '#0a0d14',
   },
   centerContainer: {
     flex: 1,
@@ -369,27 +281,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 24,
     width: '100%',
+    backgroundColor: '#0a0d14',
   },
   loadingText: {
     marginTop: 14,
-    fontSize: 16,
-    color: '#475569',
+    fontSize: 15,
+    color: '#8e9cb2',
     fontWeight: '500',
   },
   errorCard: {
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
+    backgroundColor: '#131824',
+    borderRadius: 20,
     padding: 32,
     alignItems: 'center',
     maxWidth: 440,
     width: '100%',
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#ef4444',
     shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 12,
-    elevation: 3,
+    shadowOpacity: 0.35,
+    shadowOffset: { width: 0, height: 8 },
+    shadowRadius: 18,
+    elevation: 4,
   },
   errorIcon: {
     fontSize: 48,
@@ -398,38 +311,40 @@ const styles = StyleSheet.create({
   errorCardTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#0f172a',
+    color: '#f1f5f9',
     marginBottom: 8,
     textAlign: 'center',
   },
   errorCardMessage: {
     fontSize: 14,
-    color: '#64748b',
+    color: '#8e9cb2',
     textAlign: 'center',
     lineHeight: 20,
     marginBottom: 20,
   },
   primaryButton: {
-    backgroundColor: '#2563eb',
+    backgroundColor: '#5ab9fc',
     paddingVertical: 10,
     paddingHorizontal: 20,
     borderRadius: 8,
     alignItems: 'center',
   },
   primaryButtonText: {
-    color: '#ffffff',
+    color: '#0a0d14',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   secondaryButton: {
-    backgroundColor: '#f1f5f9',
+    backgroundColor: '#1a2030',
     paddingVertical: 10,
     paddingHorizontal: 20,
     borderRadius: 8,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#253046',
   },
   secondaryButtonText: {
-    color: '#475569',
+    color: '#8e9cb2',
     fontSize: 14,
     fontWeight: '600',
   },
@@ -439,38 +354,42 @@ const styles = StyleSheet.create({
   },
   projectorFrame: {
     width: '100%',
-    maxWidth: 680,
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    padding: 24,
+    maxWidth: 1050,
+    backgroundColor: '#131824',
+    borderRadius: 24,
+    padding: 16,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
     shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowOffset: { width: 0, height: 6 },
-    shadowRadius: 16,
-    elevation: 4,
+    shadowOpacity: 0.45,
+    shadowOffset: { width: 0, height: 16 },
+    shadowRadius: 32,
+    elevation: 8,
   },
   navBar: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
-    marginBottom: 16,
+    borderBottomColor: '#1f2738',
+    marginBottom: 18,
   },
   backButton: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingVertical: 6,
     paddingHorizontal: 12,
-    backgroundColor: '#f8fafc',
-    borderRadius: 6,
+    backgroundColor: '#1a2030',
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#253046',
   },
   backButtonText: {
-    color: '#475569',
-    fontSize: 13,
+    color: '#8e9cb2',
+    fontSize: 12,
     fontWeight: '600',
   },
   navCenter: {
@@ -482,20 +401,25 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   statusBadgeOpen: {
-    backgroundColor: '#dcfce7',
+    backgroundColor: '#0b2e23',
+    borderWidth: 1,
+    borderColor: '#10b981',
   },
   statusBadgeClosed: {
-    backgroundColor: '#f1f5f9',
+    backgroundColor: '#1a2030',
+    borderWidth: 1,
+    borderColor: '#253046',
   },
   statusBadgeText: {
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   statusBadgeTextOpen: {
-    color: '#15803d',
+    color: '#34d399',
   },
   statusBadgeTextClosed: {
-    color: '#64748b',
+    color: '#8e9cb2',
   },
   navRight: {
     flexDirection: 'row',
@@ -503,26 +427,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   refreshButton: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingVertical: 6,
     paddingHorizontal: 12,
-    backgroundColor: '#eff6ff',
-    borderRadius: 6,
+    backgroundColor: '#1a2030',
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#bfdbfe',
+    borderColor: '#253046',
   },
   refreshButtonText: {
-    color: '#2563eb',
-    fontSize: 13,
+    color: '#5ab9fc',
+    fontSize: 12,
     fontWeight: '600',
   },
   signOutButton: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingVertical: 6,
     paddingHorizontal: 12,
-    backgroundColor: '#fee2e2',
-    borderRadius: 6,
+    backgroundColor: '#381418',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ef4444',
   },
   signOutButtonText: {
-    color: '#b91c1c',
+    color: '#f87171',
     fontSize: 12,
     fontWeight: '600',
   },
@@ -531,87 +461,83 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   classroomTitle: {
-    fontSize: 12,
-    color: '#64748b',
-    fontWeight: '700',
+    fontSize: 11,
+    color: '#5ab9fc',
+    fontWeight: '800',
     textTransform: 'uppercase',
-    letterSpacing: 1.2,
-    marginBottom: 4,
-  },
-  subjectTitle: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#0f172a',
-    textAlign: 'center',
+    letterSpacing: 1.5,
     marginBottom: 6,
   },
+  subjectTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#f1f5f9',
+    textAlign: 'center',
+    marginBottom: 6,
+    letterSpacing: -0.5,
+  },
   periodMeta: {
-    fontSize: 14,
-    color: '#475569',
+    fontSize: 13,
+    color: '#8e9cb2',
     textAlign: 'center',
     fontWeight: '500',
   },
   qrDisplayCard: {
     alignItems: 'center',
-    backgroundColor: '#f8fafc',
-    borderRadius: 14,
-    padding: 24,
+    backgroundColor: '#0f1420',
+    borderRadius: 18,
+    padding: 12,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
     marginBottom: 16,
+  },
+  qrDisplayWide: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 40,
   },
   qrWrapper: {
     padding: 16,
     backgroundColor: '#ffffff',
-    borderRadius: 16,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: '#cbd5e1',
     shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 10,
-    elevation: 2,
+    shadowOpacity: 0.25,
+    shadowOffset: { width: 0, height: 8 },
+    shadowRadius: 16,
+    elevation: 4,
     marginBottom: 16,
   },
   qrImage: {
-    width: 320,
-    height: 320,
+    width: 300,
+    height: 300,
   },
   qrFallbackBox: {
-    width: 320,
-    height: 320,
+    width: 300,
+    height: 300,
     justifyContent: 'center',
     alignItems: 'center',
   },
   qrFallbackText: {
     marginTop: 12,
     fontSize: 14,
-    color: '#64748b',
+    color: '#8e9cb2',
   },
   scanInstruction: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1e293b',
-    textAlign: 'center',
-    marginBottom: 8,
+    fontSize: 23,
+    fontWeight: '700',
+    color: '#f1f5f9',
+    marginBottom: 4,
   },
-  timerBadge: {
-    backgroundColor: '#eff6ff',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginBottom: 16,
-  },
+  scanDetail: { color: '#a9bad0', marginBottom: 8, fontSize: 15 },
   timerText: {
     fontSize: 12,
-    color: '#2563eb',
-    fontWeight: '500',
-  },
-  timerBadgeExpiring: {
-    backgroundColor: '#fef3c7',
+    color: '#34d399',
+    fontWeight: '700',
   },
   timerTextExpiring: {
-    color: '#b45309',
+    color: '#f87171',
     fontWeight: '700',
   },
   interruptedBanner: {
@@ -619,27 +545,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: '#fffbeb',
+    backgroundColor: '#38260b',
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: '#d97706',
     borderRadius: 8,
     paddingVertical: 8,
     paddingHorizontal: 12,
     marginBottom: 16,
   },
   interruptedBannerText: {
-    color: '#b45309',
-    fontSize: 13,
+    flexShrink: 1,
+    color: '#fbbf24',
+    fontSize: 12,
     fontWeight: '600',
   },
   qrExpiredBox: {
-    width: 320,
-    height: 320,
+    width: 300,
+    height: 300,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
-    backgroundColor: '#fffbeb',
-    borderRadius: 12,
+    backgroundColor: '#0f1420',
+    borderRadius: 14,
   },
   qrExpiredIcon: {
     fontSize: 44,
@@ -648,54 +575,53 @@ const styles = StyleSheet.create({
   qrExpiredTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#92400e',
+    color: '#fbbf24',
     marginBottom: 6,
     textAlign: 'center',
   },
   qrExpiredText: {
     fontSize: 13,
-    color: '#b45309',
+    color: '#8e9cb2',
     textAlign: 'center',
     lineHeight: 18,
   },
   summaryBarArea: {
     width: '100%',
-    maxWidth: 420,
+    maxWidth: 330,
     marginTop: 8,
   },
-  summaryBarHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
   summaryBarLabel: {
-    fontSize: 13,
-    color: '#475569',
-    fontWeight: '500',
+    fontSize: 14,
+    marginBottom: 8,
+    color: '#8e9cb2',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   summaryBarValue: {
-    fontSize: 13,
-    color: '#0f172a',
+    fontSize: 44,
+    marginTop: 10,
+    color: '#f1f5f9',
     fontWeight: '700',
   },
   progressBarTrack: {
-    height: 10,
-    backgroundColor: '#e2e8f0',
-    borderRadius: 5,
+    height: 8,
+    backgroundColor: '#1a2030',
+    borderRadius: 4,
     overflow: 'hidden',
   },
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#16a34a',
-    borderRadius: 5,
+    backgroundColor: '#34d399',
+    borderRadius: 4,
   },
   closedCard: {
     alignItems: 'center',
-    backgroundColor: '#f8fafc',
-    borderRadius: 14,
+    backgroundColor: '#0f1420',
+    borderRadius: 18,
     padding: 36,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
     marginBottom: 16,
   },
   closedIcon: {
@@ -703,63 +629,47 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   closedTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#0f172a',
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#f1f5f9',
     marginBottom: 8,
     textAlign: 'center',
   },
   closedMessage: {
-    fontSize: 15,
-    color: '#64748b',
+    fontSize: 14,
+    color: '#8e9cb2',
     textAlign: 'center',
     maxWidth: 440,
     lineHeight: 22,
     marginBottom: 20,
   },
   finalStatsBox: {
-    backgroundColor: '#ffffff',
-    borderRadius: 10,
-    padding: 16,
+    backgroundColor: '#1a2030',
+    borderRadius: 14,
+    padding: 18,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#253046',
     alignItems: 'center',
     width: '100%',
     maxWidth: 360,
   },
   finalStatsTitle: {
-    fontSize: 12,
-    color: '#64748b',
-    fontWeight: '700',
+    fontSize: 11,
+    color: '#8e9cb2',
+    fontWeight: '800',
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 4,
+    letterSpacing: 0.8,
+    marginBottom: 6,
   },
   finalStatsText: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#0f172a',
-    marginBottom: 2,
-  },
-  finalPercentageText: {
-    fontSize: 13,
-    color: '#16a34a',
-    fontWeight: '600',
-  },
-  footerRow: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#f1f5f9',
-  },
-  footerNote: {
-    fontSize: 12,
-    color: '#94a3b8',
+    color: '#f1f5f9',
     marginBottom: 4,
   },
-  privacyNote: {
-    fontSize: 11,
-    color: '#64748b',
-    lineHeight: 16,
+  finalPercentageText: {
+    fontSize: 14,
+    color: '#34d399',
+    fontWeight: '700',
   },
 });

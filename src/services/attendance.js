@@ -1,155 +1,40 @@
-import { API_BASE_URL } from '../config/api';
-import { getToken } from './auth';
+import { authenticatedRequest } from './auth';
 
-export async function openAttendanceSession(periodId) {
-  const token = await getToken();
-  if (!token) throw new Error('Not authenticated');
+function sessionPath(sessionId) {
+  return `/attendance/sessions/${encodeURIComponent(sessionId)}`;
+}
 
-  const res = await fetch(`${API_BASE_URL}/attendance/sessions`, {
+export function openAttendanceSession(periodId) {
+  return authenticatedRequest('/attendance/sessions', { method: 'POST', body: { periodId } });
+}
+
+export function getAttendanceSession(sessionId) {
+  return authenticatedRequest(sessionPath(sessionId));
+}
+
+export function getSessionQrCode(sessionId) {
+  return authenticatedRequest(`${sessionPath(sessionId)}/code`);
+}
+
+export function submitCheckIn(payload) {
+  return authenticatedRequest('/attendance/check-in', { method: 'POST', body: payload });
+}
+
+export function closeAttendanceSession(sessionId) {
+  return authenticatedRequest(`${sessionPath(sessionId)}/close`, { method: 'POST' });
+}
+
+export function updateAttendanceRecord(sessionId, { studentId, status }) {
+  return authenticatedRequest(`${sessionPath(sessionId)}/records`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ periodId }),
+    body: { studentId, status },
   });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to open attendance session');
-  }
-
-  return data;
 }
 
-export async function getAttendanceSession(sessionId) {
-  const token = await getToken();
-  if (!token) throw new Error('Not authenticated');
-
-  const res = await fetch(`${API_BASE_URL}/attendance/sessions/${encodeURIComponent(sessionId)}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to fetch attendance session');
-  }
-
-  return data;
+export function getStudentAttendance() {
+  return authenticatedRequest('/attendance/student');
 }
 
-export async function getAttendanceRoster(sessionId) {
-  return getAttendanceSession(sessionId);
-}
-
-export async function getSessionQrCode(sessionId) {
-  const token = await getToken();
-  if (!token) throw new Error('Not authenticated');
-
-  const res = await fetch(`${API_BASE_URL}/attendance/sessions/${encodeURIComponent(sessionId)}/code`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to fetch QR code');
-  }
-
-  return data;
-}
-
-export async function submitCheckIn(payload) {
-  const token = await getToken();
-  if (!token) throw new Error('Not authenticated');
-
-  const res = await fetch(`${API_BASE_URL}/attendance/check-in`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to submit check-in');
-  }
-
-  return data;
-}
-
-export async function closeAttendanceSession(sessionId) {
-  const token = await getToken();
-  if (!token) throw new Error('Not authenticated');
-
-  const res = await fetch(`${API_BASE_URL}/attendance/sessions/${encodeURIComponent(sessionId)}/close`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to close attendance session');
-  }
-
-  return data;
-}
-
-export async function updateAttendanceRecord(sessionId, { studentId, status }) {
-  const token = await getToken();
-  if (!token) throw new Error('Not authenticated');
-
-  const res = await fetch(`${API_BASE_URL}/attendance/sessions/${encodeURIComponent(sessionId)}/records`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ studentId, status }),
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to update attendance record');
-  }
-
-  return data;
-}
-
-export async function getStudentAttendance() {
-  const token = await getToken();
-  if (!token) throw new Error('Not authenticated');
-
-  const res = await fetch(`${API_BASE_URL}/attendance/student`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to fetch student attendance');
-  }
-
-  return data;
-}
-
-export async function getSessionSummary(sessionId) {
-  const token = await getToken();
-  if (!token) throw new Error('Not authenticated');
-
-  const res = await fetch(`${API_BASE_URL}/attendance/sessions/${encodeURIComponent(sessionId)}/summary`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    const error = new Error(data.error || 'Failed to fetch session summary');
-    error.status = res.status;
-    throw error;
-  }
-
-  return data;
+export function getSessionSummary(sessionId, signal) {
+  return authenticatedRequest(`${sessionPath(sessionId)}/summary`, { signal });
 }

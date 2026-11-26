@@ -1,6 +1,6 @@
 import { suggestActivityForGap } from './activities.js';
 
-export function formatTimeInTimezone(dateObj, timezone = 'America/New_York') {
+export function formatTimeInTimezone(dateObj, timezone = 'Asia/Kolkata') {
   return new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
     hour: 'numeric',
@@ -9,7 +9,7 @@ export function formatTimeInTimezone(dateObj, timezone = 'America/New_York') {
   }).format(new Date(dateObj));
 }
 
-export function createDateInTimezone(dateStr, timeStr, timezone = 'America/New_York') {
+export function createDateInTimezone(dateStr, timeStr, timezone = 'Asia/Kolkata') {
   const [year, month, day] = dateStr.split('-').map(Number);
   const [hour, min] = timeStr.split(':').map(Number);
   const utcGuess = new Date(Date.UTC(year, month - 1, day, hour, min, 0));
@@ -56,7 +56,7 @@ export function computeFreePeriods({
   classes = [],
   schoolDayStart = '09:00',
   schoolDayEnd = '17:00',
-  timezone = 'America/New_York',
+  timezone = 'Asia/Kolkata',
   dateStr,
   preferences = null,
   catalog = undefined,
@@ -110,7 +110,7 @@ export function computeFreePeriods({
     if (occ.start > cursor) {
       const gapStart = new Date(cursor);
       const gapEnd = new Date(occ.start);
-      const durationMinutes = Math.round((gapEnd.getTime() - gapStart.getTime()) / 60000);
+      const durationMinutes = Math.floor((gapEnd.getTime() - gapStart.getTime()) / 60000);
       if (durationMinutes > 0) {
         const suggestion = suggestActivityForGap({
           gapDurationMinutes: durationMinutes,
@@ -145,7 +145,7 @@ export function computeFreePeriods({
   if (cursor < schoolBoundaryEnd.getTime()) {
     const gapStart = new Date(cursor);
     const gapEnd = new Date(schoolBoundaryEnd.getTime());
-    const durationMinutes = Math.round((gapEnd.getTime() - gapStart.getTime()) / 60000);
+    const durationMinutes = Math.floor((gapEnd.getTime() - gapStart.getTime()) / 60000);
     if (durationMinutes > 0) {
       const suggestion = suggestActivityForGap({
         gapDurationMinutes: durationMinutes,

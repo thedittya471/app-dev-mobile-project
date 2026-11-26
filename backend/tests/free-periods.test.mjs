@@ -175,3 +175,18 @@ test('6. Duration formatter formats hours and minutes', () => {
   assert.equal(formatDuration(90), '1 hr 30 min');
   assert.equal(formatDuration(270), '4 hr 30 min');
 });
+
+test('Free periods only count whole minutes that fit before the next class', () => {
+  const [gap] = computeFreePeriods({
+    classes: [{
+      startTime: '2026-11-26T09:09:45+05:30',
+      endTime: '2026-11-26T10:00:00+05:30',
+    }],
+    schoolDayStart: '09:00',
+    schoolDayEnd: '10:00',
+    timezone: 'Asia/Kolkata',
+    dateStr: '2026-11-26',
+  });
+  assert.equal(gap.durationMinutes, 9);
+  assert.ok(!gap.suggestion || gap.suggestion.duration <= gap.durationMinutes);
+});

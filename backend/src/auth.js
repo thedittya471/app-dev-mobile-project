@@ -68,12 +68,16 @@ export async function requireAuth(req, res, next) {
   }
 
   const token = authHeader.slice(7).trim();
-  const user = await getUserFromSession(token);
-  if (!user) {
-    return res.status(401).json({ error: 'Invalid or expired session' });
+  try {
+    const user = await getUserFromSession(token);
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid or expired session' });
+    }
+    req.user = user;
+    req.sessionToken = token;
+    next();
+  } catch (error) {
+    console.error('Session lookup failed:', error.message);
+    res.status(503).json({ error: 'Sign-in service is temporarily unavailable' });
   }
-
-  req.user = user;
-  req.sessionToken = token;
-  next();
 }

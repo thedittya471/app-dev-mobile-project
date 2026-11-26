@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, View, ActivityIndicator } from 'react-native';
+import Constants from 'expo-constants';
+import { StyleSheet, View, ActivityIndicator, Platform } from 'react-native';
 import { getCurrentUser, signOut } from './src/services/auth';
 import SignInScreen from './src/screens/SignInScreen';
 import TeacherDashboard from './src/screens/TeacherDashboard';
@@ -8,7 +9,7 @@ import StudentDashboard from './src/screens/StudentDashboard';
 import ProjectorScreen from './src/screens/ProjectorScreen';
 
 function parseBrowserRoute() {
-  if (typeof window === 'undefined' || !window.location) {
+  if (Platform.OS !== 'web' || typeof window === 'undefined' || !window.location) {
     return { route: 'home', sessionId: null };
   }
 
@@ -60,23 +61,30 @@ function parseBrowserRoute() {
 export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [restoreError, setRestoreError] = useState('');
   const [routeInfo, setRouteInfo] = useState(() => parseBrowserRoute());
 
   useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined' || typeof window.addEventListener !== 'function') {
+      return;
+    }
+
     function handleLocationChange() {
       setRouteInfo(parseBrowserRoute());
     }
 
-    if (typeof window !== 'undefined') {
-      window.addEventListener('popstate', handleLocationChange);
-      return () => window.removeEventListener('popstate', handleLocationChange);
-    }
+    window.addEventListener('popstate', handleLocationChange);
+    window.addEventListener('hashchange', handleLocationChange);
+    return () => {
+      window.removeEventListener('popstate', handleLocationChange);
+      window.removeEventListener('hashchange', handleLocationChange);
+    };
   }, []);
 
   function navigateTo(route, sessionId = null) {
-    if (typeof window !== 'undefined') {
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.history?.pushState === 'function') {
       const url = route === 'projector' && sessionId
-        ? `/projector?sessionId=${encodeURIComponent(sessionId)}`
+        ? `/?route=projector&sessionId=${encodeURIComponent(sessionId)}`
         : '/';
       window.history.pushState({}, '', url);
     }
@@ -88,8 +96,8 @@ export default function App() {
       try {
         const currentUser = await getCurrentUser();
         setUser(currentUser);
-      } catch {
-        setUser(null);
+      } catch (error) {
+        setRestoreError(error.message);
       } finally {
         setLoading(false);
       }
@@ -99,25 +107,34 @@ export default function App() {
 
   async function handleSignOut() {
     setLoading(true);
-    await signOut();
-    setUser(null);
-    setLoading(false);
+    try {
+      await signOut();
+    } finally {
+      setUser(null);
+      setRestoreError('');
+      navigateTo('home');
+      setLoading(false);
+    }
   }
 
   function renderContent() {
     if (loading) {
-      return <ActivityIndicator size="large" color="#2563eb" />;
+      return (
+        <View style={styles.centerContainer}>
+          <ActivityIndicator size="large" color="#5ab9fc" />
+        </View>
+      );
     }
 
     if (!user) {
-      return <SignInScreen onSignInSuccess={(loggedInUser) => setUser(loggedInUser)} />;
+      return <SignInScreen initialError={restoreError} onSignInSuccess={(loggedInUser) => setUser(loggedInUser)} />;
     }
 
     if (routeInfo.route === 'projector') {
       return (
         <ProjectorScreen
+          key={routeInfo.sessionId}
           sessionId={routeInfo.sessionId}
-          user={user}
           onBack={() => navigateTo('home')}
           onSignOut={handleSignOut}
         />
@@ -140,7 +157,7 @@ export default function App() {
   return (
     <View style={styles.container}>
       {renderContent()}
-      <StatusBar style="auto" />
+      <StatusBar style="light" />
     </View>
   );
 }
@@ -148,9 +165,14 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#0a0d14',
+    paddingTop: Platform.OS === 'web' ? 0 : Constants.statusBarHeight,
+    width: '100%',
+  },
+  centerContainer: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 16,
+    backgroundColor: '#0a0d14',
   },
 });

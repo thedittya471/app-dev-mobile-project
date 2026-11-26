@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -7,8 +7,11 @@ import {
   ActivityIndicator,
   ScrollView,
   Image,
+  Platform,
 } from 'react-native';
-import { getSchedule, getPeriodById } from '../services/schedule';
+import { getPeriodById } from '../services/schedule';
+import useSchedule from '../hooks/useSchedule';
+import useQrCountdown from '../hooks/useQrCountdown';
 import {
   openAttendanceSession,
   getSessionQrCode,
@@ -18,61 +21,50 @@ import {
 } from '../services/attendance';
 
 export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
-  const [scheduleData, setScheduleData] = useState({
-    schedule: [],
-    institutionDate: '',
-    institutionTimezone: '',
-  });
   const [selectedDate, setSelectedDate] = useState('today');
+  const { scheduleData, loading, error, refresh: refreshSchedule } = useSchedule(selectedDate);
   const [selectedPeriod, setSelectedPeriod] = useState(null);
   const [activeSessionData, setActiveSessionData] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(false);
   const [closeLoading, setCloseLoading] = useState(false);
   const [updatingStudentId, setUpdatingStudentId] = useState(null);
-  const [error, setError] = useState(null);
   const [detailError, setDetailError] = useState(null);
   const [sessionError, setSessionError] = useState(null);
   const [rowError, setRowError] = useState(null);
   const [qrData, setQrData] = useState(null);
   const [qrLoading, setQrLoading] = useState(false);
   const [qrError, setQrError] = useState(null);
-  const [countdown, setCountdown] = useState(0);
+  const activeSessionId = activeSessionData?.session?.id;
+  const isSessionOpen = activeSessionData?.session?.status === 'open';
+  const countdown = useQrCountdown(isSessionOpen && qrData?.sessionId === activeSessionId ? qrData : null);
+  const qrRequest = useRef(false);
+  const rosterRequest = useRef(false);
+  const rosterVersion = useRef(0);
   const [rosterLoading, setRosterLoading] = useState(false);
   const [rosterRefreshing, setRosterRefreshing] = useState(false);
   const [rosterError, setRosterError] = useState(null);
 
-  const loadSchedule = useCallback(async (dateParam) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await getSchedule(dateParam);
-      setScheduleData(data);
-    } catch (err) {
-      setError(err.message || 'Failed to load timetable');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   const loadQrCode = useCallback(async (sessionId) => {
-    if (!sessionId) return;
+    if (!sessionId || qrRequest.current) return;
+    qrRequest.current = true;
     setQrLoading(true);
     setQrError(null);
     try {
       const codeResult = await getSessionQrCode(sessionId);
-      setQrData(codeResult);
-      setCountdown(codeResult.expiresInSeconds);
+      setQrData({ ...codeResult, receivedAt: Date.now() });
     } catch (err) {
       setQrError(err.message || 'Failed to fetch QR code');
     } finally {
+      qrRequest.current = false;
       setQrLoading(false);
     }
   }, []);
 
   const loadRoster = useCallback(async (sessionId, isBackground = false) => {
-    if (!sessionId) return;
+    if (!sessionId || rosterRequest.current) return;
+    rosterRequest.current = true;
+    const version = rosterVersion.current;
     if (!isBackground) {
       setRosterLoading(true);
     } else {
@@ -81,8 +73,9 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
     setRosterError(null);
     try {
       const data = await getAttendanceSession(sessionId);
+      if (version !== rosterVersion.current) return;
       setActiveSessionData((prev) => {
-        if (!prev) return data;
+        if (prev?.session?.id !== sessionId) return prev;
         return {
           ...prev,
           session: data.session,
@@ -91,78 +84,46 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
         };
       });
     } catch (err) {
-      if (!isBackground) {
+      if (version === rosterVersion.current) {
         setRosterError(err.message || 'Failed to load attendance roster');
       }
     } finally {
+      rosterRequest.current = false;
       setRosterLoading(false);
       setRosterRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
-    loadSchedule(selectedDate);
-  }, [loadSchedule, selectedDate]);
-
-  useEffect(() => {
-    if (activeSessionData?.session?.id && activeSessionData?.session?.status === 'open') {
-      loadQrCode(activeSessionData.session.id);
-    } else {
-      setQrData(null);
-      setCountdown(0);
-    }
-  }, [activeSessionData?.session?.id, activeSessionData?.session?.status, loadQrCode]);
-
-  // Poll QR code countdown
-  useEffect(() => {
-    if (!activeSessionData?.session?.id || activeSessionData?.session?.status !== 'open') {
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          loadQrCode(activeSessionData.session.id);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
+    if (!isSessionOpen || countdown > 0) return;
+    const timer = setInterval(() => loadQrCode(activeSessionId), 1000);
     return () => clearInterval(timer);
-  }, [activeSessionData?.session?.id, activeSessionData?.session?.status, loadQrCode]);
+  }, [activeSessionId, isSessionOpen, countdown, loadQrCode]);
 
-  // Poll and refresh roster while viewing open session
   useEffect(() => {
-    if (!activeSessionData?.session?.id || activeSessionData?.session?.status !== 'open') {
-      return;
-    }
-
-    const rosterTimer = setInterval(() => {
-      loadRoster(activeSessionData.session.id, true);
-    }, 3000);
-
-    return () => clearInterval(rosterTimer);
-  }, [activeSessionData?.session?.id, activeSessionData?.session?.status, loadRoster]);
+    if (!isSessionOpen || closeLoading || updatingStudentId) return;
+    const timer = setInterval(() => loadRoster(activeSessionId, true), 3000);
+    return () => clearInterval(timer);
+  }, [activeSessionId, isSessionOpen, closeLoading, updatingStudentId, loadRoster]);
 
   async function handleOpenPeriod(periodId) {
+    rosterVersion.current += 1;
     setDetailLoading(true);
     setDetailError(null);
     setActiveSessionData(null);
     setSessionError(null);
     setQrData(null);
     setQrError(null);
-    setCountdown(0);
     try {
       const period = await getPeriodById(periodId);
       setSelectedPeriod(period);
       if (period.session) {
         // If session already exists, load it
         try {
-          const sessionResult = await openAttendanceSession(periodId);
+          const sessionResult = await getAttendanceSession(period.session.id);
           setActiveSessionData(sessionResult);
-        } catch {
-          // Keep period view even if session load fails
+        } catch (err) {
+          setSessionError(err.message);
         }
       }
     } catch (err) {
@@ -189,14 +150,14 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
 
   async function handleCloseSession() {
     if (!activeSessionData?.session?.id) return;
+    rosterVersion.current += 1;
     setCloseLoading(true);
     setSessionError(null);
     try {
       const result = await closeAttendanceSession(activeSessionData.session.id);
       setActiveSessionData(result);
       setQrData(null);
-      setCountdown(0);
-    } catch (err) {
+      } catch (err) {
       setSessionError(err.message || 'Failed to close attendance session');
     } finally {
       setCloseLoading(false);
@@ -206,6 +167,7 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
   async function handleToggleStudentStatus(studentId, currentStatus) {
     if (!activeSessionData?.session?.id) return;
     const targetStatus = currentStatus === 'present' ? 'absent' : 'present';
+    rosterVersion.current += 1;
     setUpdatingStudentId(studentId);
     setRowError(null);
     try {
@@ -226,40 +188,51 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
   }
 
   function handleBackToTimetable() {
+    rosterVersion.current += 1;
     setSelectedPeriod(null);
     setActiveSessionData(null);
     setQrData(null);
     setQrError(null);
-    setCountdown(0);
     setRosterError(null);
     setRowError(null);
     setUpdatingStudentId(null);
     setDetailError(null);
     setSessionError(null);
-    loadSchedule(selectedDate);
+    refreshSchedule();
   }
+
+  const isClosed = activeSessionData?.session?.status === 'closed';
+  const roster = activeSessionData?.roster ?? [];
+  const totalEnrolled = roster.length;
+  const checkedInCount = roster.filter((student) => student.status === 'present').length;
+  const absentCount = roster.filter((student) => student.status === 'absent').length;
+  const pendingCount = roster.filter((student) => student.status === 'pending').length;
+  const percentage = totalEnrolled ? Math.round((checkedInCount / totalEnrolled) * 100) : 0;
+  const isUpdatingSession = closeLoading || !!updatingStudentId;
+  const hasActiveQr = qrData?.sessionId === activeSessionId && countdown > 0;
 
   return (
     <ScrollView contentContainerStyle={styles.scrollContainer}>
       <View style={styles.card}>
         <View style={styles.headerRow}>
-          <View>
+          <View style={styles.identity}>
             <View style={styles.badge}>
               <Text style={styles.badgeText}>Teacher Portal</Text>
             </View>
-            <Text style={styles.greeting}>{user.name}</Text>
+            <Text accessibilityRole="header" style={styles.greeting}>{user.name}</Text>
             <Text style={styles.email}>{user.email}</Text>
           </View>
-          <TouchableOpacity style={styles.signOutButton} onPress={onSignOut}>
+          <TouchableOpacity accessibilityRole="button" style={styles.signOutButton} onPress={onSignOut}>
             <Text style={styles.signOutButtonText}>Sign Out</Text>
           </TouchableOpacity>
         </View>
 
         {selectedPeriod ? (
           <View style={styles.detailContainer}>
-            <TouchableOpacity
+            <TouchableOpacity accessibilityRole="button"
               style={styles.backButton}
               onPress={handleBackToTimetable}
+              disabled={sessionLoading || isUpdatingSession || detailLoading}
             >
               <Text style={styles.backButtonText}>{"← Back to Timetable"}</Text>
             </TouchableOpacity>
@@ -278,15 +251,7 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                 <Text style={styles.metaValue}>{selectedPeriod.timezone}</Text>
               </View>
 
-              {activeSessionData ? (() => {
-                const isClosed = activeSessionData.session.status === 'closed';
-                const totalEnrolled = activeSessionData.roster.length;
-                const checkedInCount = activeSessionData.roster.filter((s) => s.status === 'present').length;
-                const absentCount = activeSessionData.roster.filter((s) => s.status === 'absent').length;
-                const pendingCount = activeSessionData.roster.filter((s) => s.status === 'pending').length;
-                const percentage = totalEnrolled ? Math.round((checkedInCount / totalEnrolled) * 100) : 0;
-
-                return (
+              {activeSessionData ? (
                   <View style={[styles.sessionBox, isClosed && styles.sessionBoxClosed]}>
                     {sessionError ? (
                       <View style={styles.errorBox}>
@@ -302,20 +267,41 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                       </View>
                       <Text style={[styles.sessionMetaText, isClosed && styles.sessionMetaTextClosed]}>
                         {isClosed
-                          ? `Closed: ${new Date(activeSessionData.session.closedAt || Date.now()).toLocaleTimeString()}`
-                          : `Opened: ${new Date(activeSessionData.session.openedAt).toLocaleTimeString()}`}
+                          ? `Closed: ${new Date(activeSessionData.session.closedAt).toLocaleTimeString('en-IN', { timeZone: selectedPeriod.timezone, hour: '2-digit', minute: '2-digit', hour12: true })}`
+                          : `Opened: ${new Date(activeSessionData.session.openedAt).toLocaleTimeString('en-IN', { timeZone: selectedPeriod.timezone, hour: '2-digit', minute: '2-digit', hour12: true })}`}
                       </Text>
                     </View>
 
                     {onOpenProjector ? (
-                      <TouchableOpacity
+                      <TouchableOpacity accessibilityRole="button"
                         style={styles.projectorLaunchButton}
                         onPress={() => onOpenProjector(activeSessionData.session.id)}
                       >
                         <Text style={styles.projectorLaunchButtonText}>
-                          📽️ Open Projector View (Classroom Display)
+                          Open Projector View
                         </Text>
                       </TouchableOpacity>
+                    ) : null}
+
+                    {!isClosed ? (
+                      <View style={styles.sessionActions}>
+                        <TouchableOpacity accessibilityRole="button"
+                          style={[styles.closeSessionButton, closeLoading && styles.buttonDisabled]}
+                          onPress={handleCloseSession}
+                          disabled={isUpdatingSession}
+                        >
+                          {closeLoading ? (
+                            <ActivityIndicator color="#ffffff" />
+                          ) : (
+                            <Text style={styles.closeSessionButtonText}>
+                              Close Session & Finalize Absences
+                            </Text>
+                          )}
+                        </TouchableOpacity>
+                        <Text style={styles.closeHint}>
+                          Pending students are marked absent when check-in closes.
+                        </Text>
+                      </View>
                     ) : null}
 
                     {isClosed ? (
@@ -328,9 +314,9 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                     ) : null}
 
                     <View style={styles.rosterSectionHeader}>
-                      <View>
-                        <Text style={styles.rosterTitle}>
-                          Private Attendance Roster ({totalEnrolled} students)
+                      <View style={styles.rosterHeading}>
+                        <Text accessibilityRole="header" style={styles.rosterTitle}>
+                          Attendance roster ({totalEnrolled})
                         </Text>
                         <Text style={styles.rosterSummaryText}>
                           {isClosed
@@ -339,7 +325,7 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                         </Text>
                       </View>
                       {!isClosed ? (
-                        <TouchableOpacity
+                        <TouchableOpacity accessibilityRole="button"
                           style={styles.rosterRefreshButton}
                           onPress={() => loadRoster(activeSessionData.session.id, false)}
                           disabled={rosterLoading || rosterRefreshing}
@@ -399,7 +385,7 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                     ) : rosterError ? (
                       <View style={styles.rosterErrorBox}>
                         <Text style={styles.rosterErrorText}>{rosterError}</Text>
-                        <TouchableOpacity
+                        <TouchableOpacity accessibilityRole="button"
                           style={styles.rosterRetryButton}
                           onPress={() => loadRoster(activeSessionData.session.id, false)}
                         >
@@ -412,18 +398,22 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                           const isPresent = s.status === 'present';
                           const isAbsent = s.status === 'absent';
                           const isUpdating = updatingStudentId === s.studentId;
+                          const initials = (s.studentName || 'Student').split(' ').map((n) => n[0]).slice(0, 2).join('');
                           return (
                             <View
-                              key={s.id}
+                              key={s.id || s.studentId}
                               style={[
                                 styles.rosterRow,
                                 isPresent && styles.rosterRowPresent,
                                 isAbsent && styles.rosterRowAbsent,
                               ]}
                             >
+                              <View style={styles.rosterAvatarCircle}>
+                                <Text style={styles.rosterAvatarText}>{initials}</Text>
+                              </View>
                               <View style={styles.rosterStudentInfo}>
                                 <Text style={styles.studentName}>{s.studentName}</Text>
-                                <Text style={styles.studentEmail}>{s.studentEmail}</Text>
+                                <Text numberOfLines={1} style={styles.studentEmail}>{s.studentEmail}</Text>
                               </View>
                               <View style={styles.rosterActionCol}>
                                 <View
@@ -450,14 +440,14 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                                   </Text>
                                 </View>
 
-                                <TouchableOpacity
+                                <TouchableOpacity accessibilityRole="button"
                                   style={[
                                     styles.correctButton,
                                     isPresent ? styles.correctButtonAbsent : styles.correctButtonPresent,
                                     isUpdating && styles.buttonDisabled,
                                   ]}
                                   onPress={() => handleToggleStudentStatus(s.studentId, s.status)}
-                                  disabled={isUpdating}
+                                  disabled={isUpdatingSession}
                                 >
                                   {isUpdating ? (
                                     <ActivityIndicator size="small" color="#ffffff" />
@@ -489,10 +479,10 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                           </View>
 
                           <Text style={styles.qrSubtitle}>
-                            Scan with student mobile app to record attendance
+                            Open Scan QR in the student app.
                           </Text>
 
-                          {qrLoading && !qrData ? (
+                          {!qrError && !hasActiveQr ? (
                             <View style={styles.qrPlaceholder}>
                               <ActivityIndicator size="large" color="#16a34a" />
                               <Text style={styles.qrLoadingText}>Generating QR code...</Text>
@@ -500,14 +490,14 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                           ) : qrError ? (
                             <View style={styles.qrErrorBox}>
                               <Text style={styles.qrErrorText}>{qrError}</Text>
-                              <TouchableOpacity
+                              <TouchableOpacity accessibilityRole="button"
                                 style={styles.qrRetryButton}
                                 onPress={() => loadQrCode(activeSessionData.session.id)}
                               >
                                 <Text style={styles.qrRetryText}>Retry QR Code</Text>
                               </TouchableOpacity>
                             </View>
-                          ) : qrData ? (
+                          ) : hasActiveQr ? (
                             <View style={styles.qrContentBox}>
                               <Image
                                 source={{ uri: qrData.qrDataUrl }}
@@ -516,10 +506,9 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                                 accessibilityLabel="Classroom QR Code"
                               />
                               <View style={styles.qrFooterRow}>
-                                <Text style={styles.qrCodeText}>
-                                  Active Code: {qrData.code.substring(0, 8)}...
-                                </Text>
-                                <TouchableOpacity
+                                <Text style={styles.qrCodeText}>Manual check-in payload</Text>
+                                <Text selectable style={styles.qrPayload}>{qrData.qrPayload}</Text>
+                                <TouchableOpacity accessibilityRole="button"
                                   style={styles.qrRefreshButton}
                                   onPress={() => loadQrCode(activeSessionData.session.id)}
                                   disabled={qrLoading}
@@ -533,27 +522,10 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                           ) : null}
                         </View>
 
-                        <TouchableOpacity
-                          style={[styles.closeSessionButton, closeLoading && styles.buttonDisabled]}
-                          onPress={handleCloseSession}
-                          disabled={closeLoading}
-                        >
-                          {closeLoading ? (
-                            <ActivityIndicator color="#ffffff" />
-                          ) : (
-                            <Text style={styles.closeSessionButtonText}>
-                              Close Session & Finalize Absences
-                            </Text>
-                          )}
-                        </TouchableOpacity>
-                        <Text style={styles.closeHint}>
-                          Finalizes pending students as absent and deactivates QR scanning.
-                        </Text>
                       </View>
                     ) : null}
                   </View>
-                );
-              })() : (
+              ) : (
                 <View>
                   {sessionError ? (
                     <View style={styles.errorBox}>
@@ -561,7 +533,7 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                     </View>
                   ) : null}
 
-                  <TouchableOpacity
+                  <TouchableOpacity accessibilityRole="button"
                     style={[styles.attendanceButton, sessionLoading && styles.buttonDisabled]}
                     onPress={handleStartSession}
                     disabled={sessionLoading}
@@ -575,7 +547,7 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                     )}
                   </TouchableOpacity>
                   <Text style={styles.attendanceHint}>
-                    Captures roster snapshot and creates at most one session per period.
+                    Opens check-in for students enrolled in this class.
                   </Text>
                 </View>
               )}
@@ -584,11 +556,13 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
         ) : (
           <View>
             <View style={styles.dateSelector}>
-              <TouchableOpacity
+              <TouchableOpacity accessibilityRole="button"
                 style={[
                   styles.dateTab,
                   selectedDate === 'today' && styles.dateTabActive,
                 ]}
+                accessibilityState={{ selected: selectedDate === 'today' }}
+                aria-pressed={selectedDate === 'today'}
                 onPress={() => setSelectedDate('today')}
               >
                 <Text
@@ -600,43 +574,43 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                   Today
                 </Text>
               </TouchableOpacity>
-              <TouchableOpacity
+              <TouchableOpacity accessibilityRole="button"
                 style={[
                   styles.dateTab,
-                  selectedDate === '2026-11-20' && styles.dateTabActive,
+                  selectedDate === 'tomorrow' && styles.dateTabActive,
                 ]}
-                onPress={() => setSelectedDate('2026-11-20')}
+                accessibilityState={{ selected: selectedDate === 'tomorrow' }}
+                aria-pressed={selectedDate === 'tomorrow'}
+                onPress={() => setSelectedDate('tomorrow')}
               >
                 <Text
                   style={[
                     styles.dateTabText,
-                    selectedDate === '2026-11-20' && styles.dateTabTextActive,
+                    selectedDate === 'tomorrow' && styles.dateTabTextActive,
                   ]}
                 >
-                  Empty Day
+                  Tomorrow
                 </Text>
               </TouchableOpacity>
             </View>
 
             <View style={styles.timezoneBanner}>
-              <Text style={styles.timezoneLabel}>Institution Date & Timezone:</Text>
               <Text style={styles.timezoneValue}>
-                {scheduleData.institutionDate || 'Loading...'} (
-                {scheduleData.institutionTimezone || 'America/New_York'})
+                {scheduleData.scheduleDate ? `${scheduleData.scheduleDate} · ${scheduleData.institutionTimezone}` : 'Institution calendar'}
               </Text>
             </View>
 
-            <Text style={styles.sectionTitle}>Assigned Classes</Text>
+            <Text accessibilityRole="header" style={styles.sectionTitle}>Assigned classes</Text>
 
             {detailLoading ? (
               <View style={styles.stateBox}>
-                <ActivityIndicator size="small" color="#2563eb" />
+                <ActivityIndicator size="small" color="#5ab9fc" />
                 <Text style={styles.stateText}>Loading period details...</Text>
               </View>
             ) : detailError ? (
               <View style={[styles.stateBox, styles.errorBox]}>
                 <Text style={styles.errorText}>{detailError}</Text>
-                <TouchableOpacity
+                <TouchableOpacity accessibilityRole="button"
                   style={styles.retryButton}
                   onPress={handleBackToTimetable}
                 >
@@ -645,15 +619,15 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
               </View>
             ) : loading ? (
               <View style={styles.stateBox}>
-                <ActivityIndicator size="small" color="#2563eb" />
+                <ActivityIndicator size="small" color="#5ab9fc" />
                 <Text style={styles.stateText}>Loading timetable...</Text>
               </View>
             ) : error ? (
               <View style={[styles.stateBox, styles.errorBox]}>
                 <Text style={styles.errorText}>{error}</Text>
-                <TouchableOpacity
+                <TouchableOpacity accessibilityRole="button"
                   style={styles.retryButton}
-                  onPress={() => loadSchedule(selectedDate)}
+                  onPress={refreshSchedule}
                 >
                   <Text style={styles.retryButtonText}>Retry</Text>
                 </TouchableOpacity>
@@ -664,27 +638,25 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
                 <Text style={styles.emptySubtitle}>
                   You have no classes scheduled for this date.
                 </Text>
-                <TouchableOpacity
+                <TouchableOpacity accessibilityRole="button"
                   style={styles.refreshButton}
-                  onPress={() => loadSchedule(selectedDate)}
+                  onPress={refreshSchedule}
                 >
                   <Text style={styles.refreshButtonText}>Refresh</Text>
                 </TouchableOpacity>
               </View>
             ) : (
               <View style={styles.classList}>
-                {scheduleData.schedule.map((item, index) => (
-                  <TouchableOpacity
+                {scheduleData.schedule.map((item) => (
+                  <TouchableOpacity accessibilityRole="button"
                     key={item.id}
                     style={styles.classItem}
                     onPress={() => handleOpenPeriod(item.id)}
+                    disabled={detailLoading}
                   >
-                    <View style={styles.classIndex}>
-                      <Text style={styles.classIndexText}>{index + 1}</Text>
-                    </View>
                     <View style={styles.classDetails}>
-                      <Text style={styles.classSubject}>{item.subject}</Text>
                       <Text style={styles.classTime}>{item.formattedTime}</Text>
+                      <Text style={styles.classSubject}>{item.subject}</Text>
                       <Text style={styles.classMeta}>{item.sectionName}</Text>
                     </View>
                     <Text style={styles.arrowText}>{"→"}</Text>
@@ -701,180 +673,191 @@ export default function TeacherDashboard({ user, onSignOut, onOpenProjector }) {
 
 const styles = StyleSheet.create({
   scrollContainer: {
-    paddingVertical: 16,
+    paddingVertical: 24,
+    paddingHorizontal: 12,
     alignItems: 'center',
     width: '100%',
   },
   card: {
     width: '100%',
-    maxWidth: 440,
-    padding: 20,
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
+    maxWidth: 850,
+    padding: 16,
+    backgroundColor: '#131824',
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.4,
+    shadowRadius: 24,
+    elevation: 8,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 16,
+    marginBottom: 20,
+    gap: 10,
   },
+  identity: { flexShrink: 1 },
   badge: {
     alignSelf: 'flex-start',
-    backgroundColor: '#fef3c7',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    backgroundColor: 'rgba(90, 185, 252, 0.12)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     borderRadius: 6,
-    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(90, 185, 252, 0.25)',
+    marginBottom: 8,
   },
   badgeText: {
-    color: '#92400e',
-    fontWeight: '700',
-    fontSize: 11,
+    color: '#5ab9fc',
+    fontWeight: '800',
+    fontSize: 10,
+    letterSpacing: 0.8,
     textTransform: 'uppercase',
   },
   greeting: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#0f172a',
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#f1f5f9',
+    letterSpacing: -0.4,
   },
   email: {
-    fontSize: 13,
-    color: '#64748b',
+    fontSize: 12,
+    color: '#8e9cb2',
+    marginTop: 2,
   },
   signOutButton: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 6,
+    paddingVertical: 7,
+    backgroundColor: '#1a2030',
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#cbd5e1',
+    borderColor: '#253046',
   },
   signOutButtonText: {
-    fontSize: 13,
-    color: '#475569',
+    fontSize: 12,
+    color: '#8e9cb2',
     fontWeight: '600',
   },
   dateSelector: {
     flexDirection: 'row',
-    backgroundColor: '#f1f5f9',
-    borderRadius: 8,
+    backgroundColor: '#0f1420',
+    borderRadius: 10,
     padding: 3,
-    marginBottom: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#1f2738',
   },
   dateTab: {
+    minHeight: 44,
+    justifyContent: 'center',
     flex: 1,
-    paddingVertical: 6,
+    paddingVertical: 8,
     alignItems: 'center',
-    borderRadius: 6,
+    borderRadius: 8,
   },
   dateTabActive: {
-    backgroundColor: '#ffffff',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
+    backgroundColor: '#5ab9fc',
   },
   dateTabText: {
     fontSize: 13,
-    fontWeight: '500',
-    color: '#64748b',
+    fontWeight: '600',
+    color: '#8e9cb2',
   },
   dateTabTextActive: {
-    color: '#0f172a',
-    fontWeight: '600',
+    color: '#0a0d14',
+    fontWeight: '800',
   },
   timezoneBanner: {
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#0f1420',
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 16,
-  },
-  timezoneLabel: {
-    fontSize: 11,
-    color: '#64748b',
-    textTransform: 'uppercase',
-    fontWeight: '600',
-    marginBottom: 2,
+    borderColor: '#1f2738',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 18,
   },
   timezoneValue: {
-    fontSize: 13,
-    color: '#334155',
+    fontSize: 12,
+    color: '#f1f5f9',
     fontWeight: '500',
   },
   sectionTitle: {
-    fontSize: 16,
+    fontSize: 20,
     fontWeight: '700',
-    color: '#0f172a',
+    color: '#f1f5f9',
     marginBottom: 12,
+    letterSpacing: -0.2,
   },
   stateBox: {
     padding: 24,
-    borderRadius: 8,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#0f1420',
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
   },
   stateText: {
-    marginTop: 8,
+    marginTop: 10,
     fontSize: 13,
-    color: '#64748b',
+    color: '#8e9cb2',
   },
   errorBox: {
-    backgroundColor: '#fee2e2',
-    borderColor: '#fca5a5',
-    padding: 12,
-    borderRadius: 8,
+    backgroundColor: '#381418',
+    borderColor: '#ef4444',
+    padding: 14,
+    borderRadius: 10,
     marginBottom: 12,
   },
   errorText: {
-    color: '#b91c1c',
-    fontSize: 14,
+    color: '#fca5a5',
+    fontSize: 13,
     textAlign: 'center',
+    fontWeight: '500',
   },
   retryButton: {
     paddingHorizontal: 16,
-    paddingVertical: 6,
-    backgroundColor: '#b91c1c',
-    borderRadius: 6,
-    marginTop: 8,
+    paddingVertical: 7,
+    backgroundColor: '#ef4444',
+    borderRadius: 8,
+    marginTop: 10,
   },
   retryButtonText: {
     color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 12,
+    fontWeight: '700',
   },
   emptyBox: {
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#0f1420',
   },
   emptyTitle: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#334155',
+    fontWeight: '700',
+    color: '#f1f5f9',
     marginBottom: 4,
   },
   emptySubtitle: {
     fontSize: 13,
-    color: '#64748b',
+    color: '#8e9cb2',
     textAlign: 'center',
-    marginBottom: 12,
+    marginBottom: 14,
     lineHeight: 18,
   },
   refreshButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    backgroundColor: '#e2e8f0',
-    borderRadius: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    backgroundColor: '#1a2030',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#253046',
   },
   refreshButtonText: {
     fontSize: 12,
-    color: '#334155',
+    color: '#f1f5f9',
     fontWeight: '600',
   },
   classList: {
@@ -883,48 +866,34 @@ const styles = StyleSheet.create({
   classItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 12,
-    backgroundColor: '#ffffff',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  classIndex: {
-    width: 28,
-    height: 28,
+    padding: 14,
+    backgroundColor: '#0f1420',
     borderRadius: 14,
-    backgroundColor: '#fef3c7',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  classIndexText: {
-    color: '#92400e',
-    fontWeight: '700',
-    fontSize: 13,
+    borderWidth: 1,
+    borderColor: '#1f2738',
   },
   classDetails: {
     flex: 1,
   },
   classSubject: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#0f172a',
+    fontWeight: '700',
+    color: '#f1f5f9',
     marginBottom: 2,
   },
   classTime: {
-    fontSize: 13,
-    color: '#2563eb',
-    fontWeight: '500',
+    fontSize: 12,
+    color: '#5ab9fc',
+    fontWeight: '600',
     marginBottom: 2,
   },
   classMeta: {
     fontSize: 12,
-    color: '#64748b',
+    color: '#8e9cb2',
   },
   arrowText: {
     fontSize: 18,
-    color: '#94a3b8',
+    color: '#627289',
     paddingHorizontal: 4,
   },
   detailContainer: {
@@ -936,80 +905,85 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   backButtonText: {
-    fontSize: 14,
-    color: '#2563eb',
-    fontWeight: '600',
+    fontSize: 13,
+    color: '#5ab9fc',
+    fontWeight: '700',
   },
   detailCard: {
     padding: 18,
-    backgroundColor: '#f8fafc',
-    borderRadius: 10,
+    backgroundColor: '#0f1420',
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
   },
   detailSubject: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#0f172a',
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#f1f5f9',
     marginBottom: 4,
   },
   detailSection: {
-    fontSize: 15,
-    color: '#475569',
+    fontSize: 14,
+    color: '#8e9cb2',
     fontWeight: '500',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   detailTime: {
-    fontSize: 15,
-    color: '#2563eb',
-    fontWeight: '600',
+    fontSize: 14,
+    color: '#5ab9fc',
+    fontWeight: '700',
     marginBottom: 16,
   },
   metaRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 6,
+    paddingVertical: 8,
     borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
+    borderTopColor: '#1f2738',
   },
   metaLabel: {
-    fontSize: 13,
-    color: '#64748b',
+    fontSize: 12,
+    color: '#8e9cb2',
   },
   metaValue: {
-    fontSize: 13,
-    color: '#0f172a',
-    fontWeight: '500',
+    fontSize: 12,
+    color: '#f1f5f9',
+    fontWeight: '600',
   },
   attendanceButton: {
     marginTop: 20,
-    backgroundColor: '#16a34a',
-    paddingVertical: 12,
-    borderRadius: 8,
+    backgroundColor: '#34d399',
+    paddingVertical: 13,
+    borderRadius: 10,
     alignItems: 'center',
+    shadowColor: '#34d399',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 3,
   },
   buttonDisabled: {
-    backgroundColor: '#86efac',
+    backgroundColor: '#0c2e22',
   },
   attendanceButtonText: {
-    color: '#ffffff',
-    fontSize: 15,
-    fontWeight: '700',
+    color: '#0a0d14',
+    fontSize: 14,
+    fontWeight: '800',
   },
   attendanceHint: {
     marginTop: 8,
-    fontSize: 12,
-    color: '#64748b',
+    fontSize: 11,
+    color: '#627289',
     textAlign: 'center',
     lineHeight: 16,
   },
   sessionBox: {
     marginTop: 18,
-    padding: 14,
-    backgroundColor: '#f0fdf4',
-    borderRadius: 8,
+    padding: 16,
+    backgroundColor: '#0b201a',
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#bbf7d0',
+    borderColor: '#10b981',
   },
   sessionStatusRow: {
     flexDirection: 'row',
@@ -1018,61 +992,66 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   statusPill: {
-    backgroundColor: '#22c55e',
+    backgroundColor: '#34d399',
     paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
   statusPillText: {
-    color: '#ffffff',
-    fontSize: 11,
-    fontWeight: '700',
+    color: '#0a0d14',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   sessionMetaText: {
     fontSize: 12,
-    color: '#15803d',
+    color: '#34d399',
+    fontWeight: '600',
   },
   rosterSectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 6,
+    marginBottom: 8,
   },
+  rosterHeading: { flex: 1, minWidth: 0, marginRight: 8 },
   rosterTitle: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#166534',
+    color: '#f1f5f9',
   },
   rosterSummaryText: {
     fontSize: 12,
-    color: '#15803d',
+    color: '#34d399',
     fontWeight: '600',
     marginTop: 2,
   },
   rosterRefreshButton: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: 8,
     paddingVertical: 4,
-    backgroundColor: '#dcfce7',
-    borderRadius: 4,
+    backgroundColor: '#0b2e23',
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: '#86efac',
+    borderColor: '#10b981',
   },
   rosterRefreshButtonText: {
     fontSize: 11,
-    color: '#166534',
+    color: '#34d399',
     fontWeight: '700',
   },
   progressBarContainer: {
     height: 6,
     width: '100%',
-    backgroundColor: '#e2e8f0',
+    backgroundColor: '#1a2030',
     borderRadius: 3,
     overflow: 'hidden',
-    marginBottom: 10,
+    marginBottom: 12,
   },
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#16a34a',
+    backgroundColor: '#34d399',
     borderRadius: 3,
   },
   summaryPillRow: {
@@ -1081,29 +1060,29 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   presentCountPill: {
-    backgroundColor: '#dcfce7',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
+    backgroundColor: '#0b2e23',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#86efac',
+    borderColor: '#10b981',
   },
   presentCountText: {
     fontSize: 11,
-    color: '#15803d',
+    color: '#34d399',
     fontWeight: '700',
   },
   pendingCountPill: {
-    backgroundColor: '#fef3c7',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
+    backgroundColor: '#38260b',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: '#d97706',
   },
   pendingCountText: {
     fontSize: 11,
-    color: '#92400e',
+    color: '#fbbf24',
     fontWeight: '700',
   },
   rosterLoadingBox: {
@@ -1115,25 +1094,25 @@ const styles = StyleSheet.create({
   },
   rosterLoadingText: {
     fontSize: 12,
-    color: '#166534',
+    color: '#34d399',
   },
   rosterErrorBox: {
     padding: 12,
-    backgroundColor: '#fee2e2',
-    borderRadius: 6,
+    backgroundColor: '#381418',
+    borderRadius: 8,
     marginBottom: 10,
     alignItems: 'center',
   },
   rosterErrorText: {
-    color: '#b91c1c',
+    color: '#fca5a5',
     fontSize: 12,
     marginBottom: 6,
   },
   rosterRetryButton: {
-    backgroundColor: '#b91c1c',
+    backgroundColor: '#ef4444',
     paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 4,
+    borderRadius: 6,
   },
   rosterRetryButtonText: {
     color: '#ffffff',
@@ -1141,22 +1120,38 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   rosterList: {
-    gap: 6,
-    marginBottom: 12,
+    gap: 8,
+    marginBottom: 14,
   },
   rosterRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 10,
-    backgroundColor: '#ffffff',
-    borderRadius: 6,
+    padding: 12,
+    backgroundColor: '#0f1420',
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#dcfce7',
+    borderColor: '#1f2738',
   },
   rosterRowPresent: {
-    borderColor: '#86efac',
-    backgroundColor: '#f0fdf4',
+    borderColor: '#10b981',
+    backgroundColor: '#0b2e2340',
+  },
+  rosterAvatarCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#1a2030',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: '#253046',
+  },
+  rosterAvatarText: {
+    color: '#5ab9fc',
+    fontSize: 12,
+    fontWeight: '700',
   },
   rosterStudentInfo: {
     flex: 1,
@@ -1166,43 +1161,46 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   correctButton: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 4,
+    borderRadius: 6,
   },
   correctButtonPresent: {
-    backgroundColor: '#16a34a',
+    backgroundColor: '#34d399',
   },
   correctButtonAbsent: {
-    backgroundColor: '#dc2626',
+    backgroundColor: '#ef4444',
   },
   correctButtonText: {
-    color: '#ffffff',
+    color: '#0a0d14',
     fontSize: 10,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   studentName: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#0f172a',
+    fontWeight: '700',
+    color: '#f1f5f9',
   },
   studentEmail: {
     fontSize: 11,
-    color: '#64748b',
+    color: '#8e9cb2',
+    marginTop: 1,
   },
   rosterStatusPill: {
     paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 4,
+    borderRadius: 6,
   },
   rosterStatusPillPresent: {
-    backgroundColor: '#dcfce7',
-    borderColor: '#86efac',
+    backgroundColor: '#0b2e23',
+    borderColor: '#10b981',
     borderWidth: 1,
   },
   rosterStatusPillPending: {
-    backgroundColor: '#fef3c7',
-    borderColor: '#fde68a',
+    backgroundColor: '#38260b',
+    borderColor: '#d97706',
     borderWidth: 1,
   },
   rosterStatusText: {
@@ -1210,19 +1208,19 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   rosterStatusTextPresent: {
-    color: '#15803d',
+    color: '#34d399',
     fontWeight: '700',
   },
   rosterStatusTextPending: {
-    color: '#92400e',
+    color: '#fbbf24',
   },
   qrCard: {
-    backgroundColor: '#ffffff',
-    borderRadius: 8,
-    padding: 14,
+    backgroundColor: '#0f1420',
+    borderRadius: 14,
+    padding: 16,
     marginBottom: 14,
     borderWidth: 1,
-    borderColor: '#bbf7d0',
+    borderColor: '#1f2738',
     alignItems: 'center',
   },
   qrHeaderRow: {
@@ -1235,33 +1233,33 @@ const styles = StyleSheet.create({
   qrTitle: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#166534',
+    color: '#f1f5f9',
   },
   qrSubtitle: {
     fontSize: 12,
-    color: '#64748b',
+    color: '#8e9cb2',
     width: '100%',
     marginBottom: 12,
   },
   timerBadge: {
-    backgroundColor: '#dcfce7',
+    backgroundColor: '#0b2e23',
     paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#86efac',
+    borderColor: '#10b981',
   },
   timerBadgeExpiring: {
-    backgroundColor: '#fee2e2',
-    borderColor: '#fca5a5',
+    backgroundColor: '#381418',
+    borderColor: '#ef4444',
   },
   timerText: {
-    color: '#15803d',
+    color: '#34d399',
     fontSize: 11,
     fontWeight: '700',
   },
   timerTextExpiring: {
-    color: '#b91c1c',
+    color: '#f87171',
   },
   qrPlaceholder: {
     height: 220,
@@ -1271,150 +1269,165 @@ const styles = StyleSheet.create({
   qrLoadingText: {
     marginTop: 8,
     fontSize: 12,
-    color: '#64748b',
+    color: '#8e9cb2',
   },
   qrErrorBox: {
     padding: 12,
     alignItems: 'center',
   },
   qrErrorText: {
-    color: '#b91c1c',
+    color: '#fca5a5',
     fontSize: 13,
     marginBottom: 8,
   },
   qrRetryButton: {
-    backgroundColor: '#16a34a',
+    backgroundColor: '#5ab9fc',
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 6,
+    borderRadius: 8,
   },
   qrRetryText: {
-    color: '#ffffff',
+    color: '#0a0d14',
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   qrContentBox: {
     alignItems: 'center',
     width: '100%',
   },
   qrImage: {
-    width: 220,
-    height: 220,
+    width: '100%',
+    maxWidth: 240,
+    aspectRatio: 1,
     backgroundColor: '#ffffff',
-    borderRadius: 6,
+    borderRadius: 12,
+    padding: 8,
   },
   qrFooterRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    gap: 8,
+    alignItems: 'flex-start',
     width: '100%',
-    marginTop: 8,
-    paddingTop: 8,
+    marginTop: 10,
+    paddingTop: 10,
     borderTopWidth: 1,
-    borderTopColor: '#f1f5f9',
+    borderTopColor: '#1f2738',
   },
   qrCodeText: {
     fontSize: 11,
-    color: '#64748b',
-    fontFamily: 'monospace',
+    color: '#5ab9fc',
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  qrPayload: {
+    width: '100%',
+    color: '#dce7f4',
+    fontSize: 12,
+    ...Platform.select({ web: { overflowWrap: 'anywhere' } }),
   },
   qrRefreshButton: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: 8,
     paddingVertical: 4,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 4,
+    backgroundColor: '#1a2030',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#253046',
   },
   qrRefreshButtonText: {
     fontSize: 11,
-    color: '#334155',
+    color: '#f1f5f9',
     fontWeight: '600',
   },
   sessionBoxClosed: {
-    backgroundColor: '#f8fafc',
-    borderColor: '#cbd5e1',
+    backgroundColor: '#0f1420',
+    borderColor: '#1f2738',
   },
   statusPillClosed: {
-    backgroundColor: '#64748b',
+    backgroundColor: '#253046',
   },
   sessionMetaTextClosed: {
-    color: '#475569',
+    color: '#8e9cb2',
   },
   closedBannerBox: {
-    backgroundColor: '#f1f5f9',
-    borderRadius: 8,
+    backgroundColor: '#1a2030',
+    borderRadius: 10,
     padding: 12,
     marginBottom: 14,
     borderWidth: 1,
-    borderColor: '#cbd5e1',
+    borderColor: '#253046',
   },
   closedBannerTitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
-    color: '#334155',
+    color: '#f1f5f9',
     marginBottom: 2,
   },
   closedBannerSubtitle: {
     fontSize: 12,
-    color: '#64748b',
+    color: '#8e9cb2',
     lineHeight: 16,
   },
   absentCountPill: {
-    backgroundColor: '#fee2e2',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
+    backgroundColor: '#381418',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#fca5a5',
+    borderColor: '#ef4444',
   },
   absentCountText: {
     fontSize: 11,
-    color: '#b91c1c',
+    color: '#f87171',
     fontWeight: '700',
   },
   rosterRowAbsent: {
-    borderColor: '#fecaca',
-    backgroundColor: '#fff5f5',
+    borderColor: '#ef4444',
+    backgroundColor: '#38141840',
   },
   rosterStatusPillAbsent: {
-    backgroundColor: '#fee2e2',
-    borderColor: '#fca5a5',
+    backgroundColor: '#381418',
+    borderColor: '#ef4444',
     borderWidth: 1,
   },
   rosterStatusTextAbsent: {
-    color: '#b91c1c',
+    color: '#f87171',
   },
+  sessionActions: { marginBottom: 16 },
   closeSessionButton: {
-    backgroundColor: '#b91c1c',
+    minHeight: 44,
+    justifyContent: 'center',
+    backgroundColor: '#ef4444',
     paddingVertical: 12,
-    borderRadius: 8,
+    borderRadius: 10,
     alignItems: 'center',
     marginTop: 6,
   },
   closeSessionButtonText: {
     color: '#ffffff',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
   },
   closeHint: {
-    fontSize: 12,
-    color: '#64748b',
+    fontSize: 11,
+    color: '#627289',
     textAlign: 'center',
     marginTop: 6,
     lineHeight: 16,
   },
   projectorLaunchButton: {
-    backgroundColor: '#eff6ff',
+    backgroundColor: '#102235',
     borderWidth: 1,
-    borderColor: '#93c5fd',
-    borderRadius: 8,
-    paddingVertical: 10,
+    borderColor: '#5ab9fc',
+    borderRadius: 10,
+    paddingVertical: 11,
     paddingHorizontal: 16,
     alignItems: 'center',
     marginBottom: 14,
   },
   projectorLaunchButtonText: {
-    color: '#1d4ed8',
-    fontSize: 14,
+    color: '#5ab9fc',
+    fontSize: 13,
     fontWeight: '700',
   },
 });

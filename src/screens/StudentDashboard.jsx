@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,23 +8,18 @@ import {
   ScrollView,
   TextInput,
 } from 'react-native';
-import { getSchedule, getPeriodById } from '../services/schedule';
+import { getPeriodById } from '../services/schedule';
+import useSchedule from '../hooks/useSchedule';
 import { getStudentAttendance } from '../services/attendance';
 import { getStudentPreferences, saveStudentPreferences } from '../services/preferences';
 import StudentScanScreen from './StudentScanScreen';
 
 export default function StudentDashboard({ user, onSignOut }) {
   const [currentView, setCurrentView] = useState('today');
-  const [scheduleData, setScheduleData] = useState({
-    schedule: [],
-    institutionDate: '',
-    institutionTimezone: '',
-  });
   const [selectedDate, setSelectedDate] = useState('today');
+  const { scheduleData, loading, error, refresh: refreshSchedule } = useSchedule(selectedDate);
   const [selectedPeriod, setSelectedPeriod] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [error, setError] = useState(null);
   const [detailError, setDetailError] = useState(null);
 
   const [attendanceData, setAttendanceData] = useState({
@@ -34,19 +29,6 @@ export default function StudentDashboard({ user, onSignOut }) {
   });
   const [attendanceLoading, setAttendanceLoading] = useState(false);
   const [attendanceError, setAttendanceError] = useState(null);
-
-  const loadSchedule = useCallback(async (dateParam) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await getSchedule(dateParam);
-      setScheduleData(data);
-    } catch (err) {
-      setError(err.message || 'Failed to load classes');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
 
   const loadAttendance = useCallback(async () => {
     setAttendanceLoading(true);
@@ -86,21 +68,12 @@ export default function StudentDashboard({ user, onSignOut }) {
     }
   }, []);
 
-  useEffect(() => {
-    loadSchedule(selectedDate);
-  }, [loadSchedule, selectedDate]);
-
-  useEffect(() => {
-    if (currentView === 'attendance') {
-      loadAttendance();
-    }
-  }, [currentView, loadAttendance]);
-
-  useEffect(() => {
-    if (currentView === 'profile') {
-      loadPreferences();
-    }
-  }, [currentView, loadPreferences]);
+  function showView(view) {
+    if (view === currentView || profileSaving || detailLoading) return;
+    setCurrentView(view);
+    if (view === 'attendance') loadAttendance();
+    if (view === 'profile') loadPreferences();
+  }
 
   function handleAddInterestTag(rawTag) {
     const tag = String(rawTag || interestInput).trim().toLowerCase();
@@ -139,14 +112,12 @@ export default function StudentDashboard({ user, onSignOut }) {
     if (interestInput.trim()) {
       const pending = interestInput.trim().toLowerCase();
       if (!currentInterests.includes(pending)) currentInterests.push(pending);
-      setInterestInput('');
     }
 
     let currentStrengths = [...strengths];
     if (strengthInput.trim()) {
       const pending = strengthInput.trim().toLowerCase();
       if (!currentStrengths.includes(pending)) currentStrengths.push(pending);
-      setStrengthInput('');
     }
 
     try {
@@ -155,9 +126,12 @@ export default function StudentDashboard({ user, onSignOut }) {
         interests: currentInterests,
         strengths: currentStrengths,
       });
+      setInterestInput('');
+      setStrengthInput('');
       setCareerGoal(res.profile.careerGoal || '');
       setInterests(res.profile.interests || []);
       setStrengths(res.profile.strengths || []);
+      refreshSchedule();
       setSaveStatus({ type: 'success', message: '✓ Preferences saved successfully!' });
     } catch (err) {
       setSaveStatus({ type: 'error', message: err.message || 'Failed to save preferences' });
@@ -182,6 +156,7 @@ export default function StudentDashboard({ user, onSignOut }) {
       setCareerGoal('');
       setInterests([]);
       setStrengths([]);
+      refreshSchedule();
       setSaveStatus({ type: 'success', message: '✓ Preferences cleared and saved.' });
     } catch (err) {
       setSaveStatus({ type: 'error', message: err.message || 'Failed to clear preferences' });
@@ -214,8 +189,9 @@ export default function StudentDashboard({ user, onSignOut }) {
       <StudentScanScreen
         onBack={() => {
           setCurrentView('today');
-          loadSchedule(selectedDate);
-          loadAttendance();
+          setSelectedDate('today');
+          setSelectedPeriod(null);
+          refreshSchedule();
         }}
       />
     );
@@ -225,32 +201,36 @@ export default function StudentDashboard({ user, onSignOut }) {
     <ScrollView contentContainerStyle={styles.scrollContainer}>
       <View style={styles.card}>
         <View style={styles.headerRow}>
-          <View>
+          <View style={styles.identity}>
             <View style={styles.badge}>
               <Text style={styles.badgeText}>Student Portal</Text>
             </View>
-            <Text style={styles.greeting}>{user.name}</Text>
+            <Text accessibilityRole="header" style={styles.greeting}>{user.name}</Text>
             <Text style={styles.email}>{user.email}</Text>
           </View>
-          <TouchableOpacity style={styles.signOutButton} onPress={onSignOut}>
+          <TouchableOpacity accessibilityRole="button" style={styles.signOutButton} onPress={onSignOut}>
             <Text style={styles.signOutButtonText}>Sign Out</Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.portalNav}>
-          <TouchableOpacity
+          <TouchableOpacity accessibilityRole="button"
             style={[styles.portalTab, currentView === 'today' && styles.portalTabActive]}
-            onPress={() => setCurrentView('today')}
+            accessibilityState={{ selected: currentView === 'today' }}
+            aria-pressed={currentView === 'today'}
+            onPress={() => showView('today')}
           >
             <Text
               style={[styles.portalTabText, currentView === 'today' && styles.portalTabTextActive]}
             >
-              📅 Today
+              Plan
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity
+          <TouchableOpacity accessibilityRole="button"
             style={[styles.portalTab, currentView === 'attendance' && styles.portalTabActive]}
-            onPress={() => setCurrentView('attendance')}
+            accessibilityState={{ selected: currentView === 'attendance' }}
+            aria-pressed={currentView === 'attendance'}
+            onPress={() => showView('attendance')}
           >
             <Text
               style={[
@@ -258,12 +238,14 @@ export default function StudentDashboard({ user, onSignOut }) {
                 currentView === 'attendance' && styles.portalTabTextActive,
               ]}
             >
-              📊 Attendance
+              Attendance
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity
+          <TouchableOpacity accessibilityRole="button"
             style={[styles.portalTab, currentView === 'profile' && styles.portalTabActive]}
-            onPress={() => setCurrentView('profile')}
+            accessibilityState={{ selected: currentView === 'profile' }}
+            aria-pressed={currentView === 'profile'}
+            onPress={() => showView('profile')}
           >
             <Text
               style={[
@@ -271,17 +253,17 @@ export default function StudentDashboard({ user, onSignOut }) {
                 currentView === 'profile' && styles.portalTabTextActive,
               ]}
             >
-              🎯 Profile
+              Profile
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.portalTab, currentView === 'scan' && styles.portalTabActive]}
-            onPress={() => setCurrentView('scan')}
+          <TouchableOpacity accessibilityRole="button"
+            style={[styles.portalTab, styles.scanTab]}
+            onPress={() => showView('scan')}
           >
             <Text
-              style={[styles.portalTabText, currentView === 'scan' && styles.portalTabTextActive]}
+              style={[styles.portalTabText, styles.scanTabText]}
             >
-              📷 Scan QR
+              Scan QR
             </Text>
           </TouchableOpacity>
         </View>
@@ -290,7 +272,7 @@ export default function StudentDashboard({ user, onSignOut }) {
           <View style={styles.profileContainer}>
             <View style={styles.profileHeaderRow}>
               <Text style={styles.sectionTitle}>Planning Preferences</Text>
-              <TouchableOpacity
+              <TouchableOpacity accessibilityRole="button"
                 style={styles.profileRefreshBtn}
                 onPress={loadPreferences}
                 disabled={profileLoading || profileSaving}
@@ -307,13 +289,13 @@ export default function StudentDashboard({ user, onSignOut }) {
 
             {profileLoading && !careerGoal && interests.length === 0 && strengths.length === 0 ? (
               <View style={styles.stateBox}>
-                <ActivityIndicator size="small" color="#2563eb" />
+                <ActivityIndicator size="small" color="#5ab9fc" />
                 <Text style={styles.stateText}>Loading planning preferences...</Text>
               </View>
             ) : profileError ? (
               <View style={[styles.stateBox, styles.errorBox]}>
                 <Text style={styles.errorText}>{profileError}</Text>
-                <TouchableOpacity style={styles.retryButton} onPress={loadPreferences}>
+                <TouchableOpacity accessibilityRole="button" style={styles.retryButton} onPress={loadPreferences}>
                   <Text style={styles.retryButtonText}>Retry</Text>
                 </TouchableOpacity>
               </View>
@@ -344,6 +326,7 @@ export default function StudentDashboard({ user, onSignOut }) {
                   <Text style={styles.inputLabel}>Career Goal (Optional)</Text>
                   <Text style={styles.inputHint}>e.g. Software Development, Robotics, Medicine</Text>
                   <TextInput
+                    accessibilityLabel="Career goal"
                     style={styles.textInput}
                     value={careerGoal}
                     onChangeText={(text) => {
@@ -363,6 +346,7 @@ export default function StudentDashboard({ user, onSignOut }) {
                   <View style={styles.tagInputRow}>
                     <TextInput
                       style={[styles.textInput, styles.tagTextInput]}
+                      accessibilityLabel="Interest"
                       value={interestInput}
                       onChangeText={setInterestInput}
                       onSubmitEditing={() => handleAddInterestTag()}
@@ -370,7 +354,7 @@ export default function StudentDashboard({ user, onSignOut }) {
                       placeholderTextColor="#94a3b8"
                       editable={!profileSaving}
                     />
-                    <TouchableOpacity
+                    <TouchableOpacity accessibilityRole="button"
                       style={styles.addTagButton}
                       onPress={() => handleAddInterestTag()}
                       disabled={!interestInput.trim() || profileSaving}
@@ -384,7 +368,7 @@ export default function StudentDashboard({ user, onSignOut }) {
                     {interests.map((tag) => (
                       <View key={tag} style={styles.tagChip}>
                         <Text style={styles.tagChipText}>{tag}</Text>
-                        <TouchableOpacity
+                        <TouchableOpacity accessibilityRole="button"
                           onPress={() => handleRemoveInterestTag(tag)}
                           style={styles.removeTagBtn}
                           disabled={profileSaving}
@@ -400,7 +384,7 @@ export default function StudentDashboard({ user, onSignOut }) {
                   <View style={styles.suggestionRow}>
                     {['software development', 'coding', 'robotics', 'algorithms', 'math', 'design', 'writing'].map(
                       (suggested) => (
-                        <TouchableOpacity
+                        <TouchableOpacity accessibilityRole="button"
                           key={suggested}
                           style={[
                             styles.suggestionChip,
@@ -430,6 +414,7 @@ export default function StudentDashboard({ user, onSignOut }) {
                   <View style={styles.tagInputRow}>
                     <TextInput
                       style={[styles.textInput, styles.tagTextInput]}
+                      accessibilityLabel="Strength"
                       value={strengthInput}
                       onChangeText={setStrengthInput}
                       onSubmitEditing={() => handleAddStrengthTag()}
@@ -437,7 +422,7 @@ export default function StudentDashboard({ user, onSignOut }) {
                       placeholderTextColor="#94a3b8"
                       editable={!profileSaving}
                     />
-                    <TouchableOpacity
+                    <TouchableOpacity accessibilityRole="button"
                       style={styles.addTagButton}
                       onPress={() => handleAddStrengthTag()}
                       disabled={!strengthInput.trim() || profileSaving}
@@ -451,7 +436,7 @@ export default function StudentDashboard({ user, onSignOut }) {
                     {strengths.map((tag) => (
                       <View key={tag} style={[styles.tagChip, styles.tagChipStrength]}>
                         <Text style={[styles.tagChipText, styles.tagChipTextStrength]}>{tag}</Text>
-                        <TouchableOpacity
+                        <TouchableOpacity accessibilityRole="button"
                           onPress={() => handleRemoveStrengthTag(tag)}
                           style={styles.removeTagBtn}
                           disabled={profileSaving}
@@ -467,7 +452,7 @@ export default function StudentDashboard({ user, onSignOut }) {
                   <View style={styles.suggestionRow}>
                     {['problem-solving', 'logical thinking', 'creativity', 'analysis', 'communication', 'focus'].map(
                       (suggested) => (
-                        <TouchableOpacity
+                        <TouchableOpacity accessibilityRole="button"
                           key={suggested}
                           style={[
                             styles.suggestionChip,
@@ -492,7 +477,7 @@ export default function StudentDashboard({ user, onSignOut }) {
 
                 {/* Action Buttons */}
                 <View style={styles.actionButtonsRow}>
-                  <TouchableOpacity
+                  <TouchableOpacity accessibilityRole="button"
                     style={[styles.saveProfileButton, profileSaving && styles.buttonDisabled]}
                     onPress={handleSavePreferences}
                     disabled={profileSaving}
@@ -504,7 +489,7 @@ export default function StudentDashboard({ user, onSignOut }) {
                     )}
                   </TouchableOpacity>
 
-                  <TouchableOpacity
+                  <TouchableOpacity accessibilityRole="button"
                     style={[styles.clearProfileButton, profileSaving && styles.buttonDisabled]}
                     onPress={handleClearPreferences}
                     disabled={profileSaving}
@@ -519,7 +504,7 @@ export default function StudentDashboard({ user, onSignOut }) {
           <View style={styles.attendanceContainer}>
             <View style={styles.attendanceHeaderRow}>
               <Text style={styles.sectionTitle}>My Attendance</Text>
-              <TouchableOpacity
+              <TouchableOpacity accessibilityRole="button"
                 style={styles.attendanceRefreshBtn}
                 onPress={loadAttendance}
                 disabled={attendanceLoading}
@@ -532,13 +517,13 @@ export default function StudentDashboard({ user, onSignOut }) {
 
             {attendanceLoading && !attendanceData.summary.totalSessions ? (
               <View style={styles.stateBox}>
-                <ActivityIndicator size="small" color="#2563eb" />
+                <ActivityIndicator size="small" color="#5ab9fc" />
                 <Text style={styles.stateText}>Loading attendance records...</Text>
               </View>
             ) : attendanceError ? (
               <View style={[styles.stateBox, styles.errorBox]}>
                 <Text style={styles.errorText}>{attendanceError}</Text>
-                <TouchableOpacity style={styles.retryButton} onPress={loadAttendance}>
+                <TouchableOpacity accessibilityRole="button" style={styles.retryButton} onPress={loadAttendance}>
                   <Text style={styles.retryButtonText}>Retry</Text>
                 </TouchableOpacity>
               </View>
@@ -549,7 +534,7 @@ export default function StudentDashboard({ user, onSignOut }) {
                 <Text style={styles.emptySubtitle}>
                   Finalized attendance records and subject percentages will appear here once teachers close class sessions.
                 </Text>
-                <TouchableOpacity style={styles.refreshButton} onPress={loadAttendance}>
+                <TouchableOpacity accessibilityRole="button" style={styles.refreshButton} onPress={loadAttendance}>
                   <Text style={styles.refreshButtonText}>Refresh</Text>
                 </TouchableOpacity>
               </View>
@@ -685,7 +670,7 @@ export default function StudentDashboard({ user, onSignOut }) {
           </View>
         ) : selectedPeriod ? (
           <View style={styles.detailContainer}>
-            <TouchableOpacity
+            <TouchableOpacity accessibilityRole="button"
               style={styles.backButton}
               onPress={handleBackToTimetable}
             >
@@ -710,9 +695,9 @@ export default function StudentDashboard({ user, onSignOut }) {
                 <Text style={styles.metaValue}>{selectedPeriod.timezone}</Text>
               </View>
 
-              <TouchableOpacity
+              <TouchableOpacity accessibilityRole="button"
                 style={styles.scanActionButton}
-                onPress={() => setCurrentView('scan')}
+                onPress={() => showView('scan')}
               >
                 <Text style={styles.scanActionButtonText}>📷 Scan Attendance QR</Text>
               </TouchableOpacity>
@@ -720,16 +705,11 @@ export default function StudentDashboard({ user, onSignOut }) {
           </View>
         ) : (
           <View>
-            <TouchableOpacity
-              style={styles.scanBanner}
-              onPress={() => setCurrentView('scan')}
-            >
-              <Text style={styles.scanBannerText}>📷 Scan Classroom Attendance QR</Text>
-            </TouchableOpacity>
-
             <View style={styles.dateSelector}>
-              <TouchableOpacity
+              <TouchableOpacity accessibilityRole="button"
                 style={[styles.dateTab, selectedDate === 'today' && styles.dateTabActive]}
+                accessibilityState={{ selected: selectedDate === 'today' }}
+                aria-pressed={selectedDate === 'today'}
                 onPress={() => setSelectedDate('today')}
               >
                 <Text
@@ -741,40 +721,40 @@ export default function StudentDashboard({ user, onSignOut }) {
                   Today
                 </Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.dateTab, selectedDate === '2026-11-20' && styles.dateTabActive]}
-                onPress={() => setSelectedDate('2026-11-20')}
+              <TouchableOpacity accessibilityRole="button"
+                style={[styles.dateTab, selectedDate === 'tomorrow' && styles.dateTabActive]}
+                accessibilityState={{ selected: selectedDate === 'tomorrow' }}
+                aria-pressed={selectedDate === 'tomorrow'}
+                onPress={() => setSelectedDate('tomorrow')}
               >
                 <Text
                   style={[
                     styles.dateTabText,
-                    selectedDate === '2026-11-20' && styles.dateTabTextActive,
+                    selectedDate === 'tomorrow' && styles.dateTabTextActive,
                   ]}
                 >
-                  Empty Day
+                  Tomorrow
                 </Text>
               </TouchableOpacity>
             </View>
 
             <View style={styles.timezoneBanner}>
-              <Text style={styles.timezoneLabel}>Institution Date & Timezone:</Text>
               <Text style={styles.timezoneValue}>
-                {scheduleData.institutionDate || 'Loading...'} (
-                {scheduleData.institutionTimezone || 'America/New_York'})
+                {scheduleData.scheduleDate ? `${scheduleData.scheduleDate} · ${scheduleData.institutionTimezone}` : 'Institution calendar'}
               </Text>
             </View>
 
-            <Text style={styles.sectionTitle}>{"Today's Classes"}</Text>
+            <Text accessibilityRole="header" style={styles.sectionTitle}>Daily plan</Text>
 
             {detailLoading ? (
               <View style={styles.stateBox}>
-                <ActivityIndicator size="small" color="#2563eb" />
+                <ActivityIndicator size="small" color="#5ab9fc" />
                 <Text style={styles.stateText}>Loading period details...</Text>
               </View>
             ) : detailError ? (
               <View style={[styles.stateBox, styles.errorBox]}>
                 <Text style={styles.errorText}>{detailError}</Text>
-                <TouchableOpacity
+                <TouchableOpacity accessibilityRole="button"
                   style={styles.retryButton}
                   onPress={handleBackToTimetable}
                 >
@@ -783,15 +763,15 @@ export default function StudentDashboard({ user, onSignOut }) {
               </View>
             ) : loading ? (
               <View style={styles.stateBox}>
-                <ActivityIndicator size="small" color="#2563eb" />
+                <ActivityIndicator size="small" color="#5ab9fc" />
                 <Text style={styles.stateText}>Loading classes...</Text>
               </View>
             ) : error ? (
               <View style={[styles.stateBox, styles.errorBox]}>
                 <Text style={styles.errorText}>{error}</Text>
-                <TouchableOpacity
+                <TouchableOpacity accessibilityRole="button"
                   style={styles.retryButton}
-                  onPress={() => loadSchedule(selectedDate)}
+                  onPress={refreshSchedule}
                 >
                   <Text style={styles.retryButtonText}>Retry</Text>
                 </TouchableOpacity>
@@ -802,9 +782,9 @@ export default function StudentDashboard({ user, onSignOut }) {
                 <Text style={styles.emptySubtitle}>
                   There are no classes scheduled for this date in the institution calendar.
                 </Text>
-                <TouchableOpacity
+                <TouchableOpacity accessibilityRole="button"
                   style={styles.refreshButton}
-                  onPress={() => loadSchedule(selectedDate)}
+                  onPress={refreshSchedule}
                 >
                   <Text style={styles.refreshButtonText}>Refresh</Text>
                 </TouchableOpacity>
@@ -816,7 +796,7 @@ export default function StudentDashboard({ user, onSignOut }) {
                     return (
                       <View key={item.id || `free-${index}`} style={styles.freePeriodCard}>
                         <View style={styles.freePeriodBadge}>
-                          <Text style={styles.freePeriodBadgeText}>⏳ FREE PERIOD</Text>
+                          <Text style={styles.freePeriodBadgeText}>Free period</Text>
                           <Text style={styles.freePeriodDurationText}>{item.durationFormatted}</Text>
                         </View>
                         <Text style={styles.freePeriodTime}>{item.formattedTime}</Text>
@@ -828,10 +808,10 @@ export default function StudentDashboard({ user, onSignOut }) {
                           <View style={styles.suggestionCard}>
                             <View style={styles.suggestionHeader}>
                               <Text style={styles.suggestionTagLabel}>
-                                {item.suggestion.isGeneral ? '💡 GENERAL STUDY' : '💡 SUGGESTED ACTIVITY'}
+                                {item.suggestion.isGeneral ? 'General study' : 'Suggested activity'}
                               </Text>
                               <Text style={styles.suggestionDurationBadge}>
-                                ⏱️ {item.suggestion.durationFormatted}
+                                {item.suggestion.durationFormatted}
                               </Text>
                             </View>
                             <Text style={styles.suggestionTitle}>{item.suggestion.title}</Text>
@@ -848,17 +828,15 @@ export default function StudentDashboard({ user, onSignOut }) {
                     );
                   }
                   return (
-                    <TouchableOpacity
+                    <TouchableOpacity accessibilityRole="button"
                       key={item.id}
                       style={styles.classItem}
                       onPress={() => handleOpenPeriod(item.id)}
+                      disabled={detailLoading}
                     >
-                      <View style={styles.classIndex}>
-                        <Text style={styles.classIndexText}>{index + 1}</Text>
-                      </View>
-                      <View style={styles.classDetails}>
-                        <Text style={styles.classSubject}>{item.subject}</Text>
+                        <View style={styles.classDetails}>
                         <Text style={styles.classTime}>{item.formattedTime}</Text>
+                        <Text style={styles.classSubject}>{item.subject}</Text>
                         <Text style={styles.classMeta}>
                           {item.teacherName} • {item.sectionName}
                         </Text>
@@ -878,177 +856,191 @@ export default function StudentDashboard({ user, onSignOut }) {
 
 const styles = StyleSheet.create({
   scrollContainer: {
-    paddingVertical: 16,
+    paddingVertical: 24,
+    paddingHorizontal: 12,
     alignItems: 'center',
     width: '100%',
   },
   card: {
     width: '100%',
-    maxWidth: 440,
-    padding: 20,
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
+    maxWidth: 730,
+    padding: 16,
+    backgroundColor: '#131824',
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.4,
+    shadowRadius: 24,
+    elevation: 8,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 16,
+    marginBottom: 20,
+    gap: 10,
   },
+  identity: { flexShrink: 1 },
   badge: {
     alignSelf: 'flex-start',
-    backgroundColor: '#dbeafe',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    backgroundColor: 'rgba(52, 211, 153, 0.12)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     borderRadius: 6,
-    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.25)',
+    marginBottom: 8,
   },
   badgeText: {
-    color: '#1e40af',
-    fontWeight: '700',
-    fontSize: 11,
+    color: '#34d399',
+    fontWeight: '800',
+    fontSize: 10,
+    letterSpacing: 0.8,
     textTransform: 'uppercase',
   },
   greeting: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#0f172a',
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#f1f5f9',
+    letterSpacing: -0.4,
   },
   email: {
-    fontSize: 13,
-    color: '#64748b',
+    fontSize: 12,
+    color: '#8e9cb2',
+    marginTop: 2,
   },
   signOutButton: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 6,
+    paddingVertical: 7,
+    backgroundColor: '#1a2030',
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#cbd5e1',
+    borderColor: '#253046',
   },
   signOutButtonText: {
-    fontSize: 13,
-    color: '#475569',
+    fontSize: 12,
+    color: '#8e9cb2',
     fontWeight: '600',
   },
   dateSelector: {
     flexDirection: 'row',
-    backgroundColor: '#f1f5f9',
-    borderRadius: 8,
+    backgroundColor: '#0f1420',
+    borderRadius: 10,
     padding: 3,
-    marginBottom: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#1f2738',
   },
   dateTab: {
+    minHeight: 44,
+    justifyContent: 'center',
     flex: 1,
-    paddingVertical: 6,
+    paddingVertical: 8,
     alignItems: 'center',
-    borderRadius: 6,
+    borderRadius: 8,
   },
   dateTabActive: {
-    backgroundColor: '#ffffff',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
+    backgroundColor: '#5ab9fc',
   },
   dateTabText: {
     fontSize: 13,
-    fontWeight: '500',
-    color: '#64748b',
+    fontWeight: '600',
+    color: '#8e9cb2',
   },
   dateTabTextActive: {
-    color: '#0f172a',
-    fontWeight: '600',
+    color: '#0a0d14',
+    fontWeight: '800',
   },
   timezoneBanner: {
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#0f1420',
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 16,
-  },
-  timezoneLabel: {
-    fontSize: 11,
-    color: '#64748b',
-    textTransform: 'uppercase',
-    fontWeight: '600',
-    marginBottom: 2,
+    borderColor: '#1f2738',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 18,
   },
   timezoneValue: {
-    fontSize: 13,
-    color: '#334155',
+    fontSize: 12,
+    color: '#f1f5f9',
     fontWeight: '500',
   },
   sectionTitle: {
-    fontSize: 16,
+    fontSize: 20,
     fontWeight: '700',
-    color: '#0f172a',
+    color: '#f1f5f9',
     marginBottom: 12,
+    letterSpacing: -0.2,
   },
   stateBox: {
     padding: 24,
-    borderRadius: 8,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#0f1420',
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
   },
   stateText: {
-    marginTop: 8,
+    marginTop: 10,
     fontSize: 13,
-    color: '#64748b',
+    color: '#8e9cb2',
   },
   errorBox: {
-    backgroundColor: '#fee2e2',
-    borderColor: '#fca5a5',
+    backgroundColor: '#381418',
+    borderColor: '#ef4444',
+    padding: 14,
+    borderRadius: 10,
+    marginBottom: 12,
   },
   errorText: {
-    color: '#b91c1c',
-    fontSize: 14,
+    color: '#fca5a5',
+    fontSize: 13,
     textAlign: 'center',
-    marginBottom: 10,
+    fontWeight: '500',
   },
   retryButton: {
     paddingHorizontal: 16,
-    paddingVertical: 6,
-    backgroundColor: '#b91c1c',
-    borderRadius: 6,
+    paddingVertical: 7,
+    backgroundColor: '#ef4444',
+    borderRadius: 8,
+    marginTop: 10,
   },
   retryButtonText: {
     color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 12,
+    fontWeight: '700',
   },
   emptyBox: {
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#0f1420',
   },
   emptyTitle: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#334155',
+    fontWeight: '700',
+    color: '#f1f5f9',
     marginBottom: 4,
   },
   emptySubtitle: {
     fontSize: 13,
-    color: '#64748b',
+    color: '#8e9cb2',
     textAlign: 'center',
-    marginBottom: 12,
+    marginBottom: 14,
     lineHeight: 18,
   },
   refreshButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    backgroundColor: '#e2e8f0',
-    borderRadius: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    backgroundColor: '#1a2030',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#253046',
   },
   refreshButtonText: {
     fontSize: 12,
-    color: '#334155',
+    color: '#f1f5f9',
     fontWeight: '600',
   },
   classList: {
@@ -1057,58 +1049,57 @@ const styles = StyleSheet.create({
   classItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 12,
-    backgroundColor: '#ffffff',
-    borderRadius: 8,
+    padding: 14,
+    backgroundColor: '#0f1420',
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
   },
   freePeriodCard: {
-    padding: 12,
-    backgroundColor: '#f8fafc',
-    borderRadius: 8,
+    padding: 14,
+    backgroundColor: '#0f1420',
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderStyle: 'dashed',
+    borderColor: 'rgba(90, 185, 252, 0.3)',
+    marginBottom: 6,
   },
   freePeriodBadge: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(90, 185, 252, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    marginBottom: 6,
   },
   freePeriodBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#0369a1',
-    letterSpacing: 0.5,
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#5ab9fc',
+    textTransform: 'uppercase',
   },
   freePeriodDurationText: {
-    fontSize: 12,
+    fontSize: 11,
+    color: '#5ab9fc',
     fontWeight: '700',
-    color: '#0284c7',
-    backgroundColor: '#e0f2fe',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
+    marginLeft: 6,
   },
   freePeriodTime: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#0f172a',
+    fontWeight: '700',
+    color: '#f1f5f9',
     marginBottom: 2,
   },
   freePeriodMeta: {
     fontSize: 12,
-    color: '#64748b',
+    color: '#8e9cb2',
   },
   suggestionCard: {
-    marginTop: 8,
-    backgroundColor: '#ffffff',
-    borderRadius: 8,
-    padding: 10,
+    marginTop: 10,
+    padding: 12,
+    backgroundColor: '#131824',
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
   },
   suggestionHeader: {
     flexDirection: 'row',
@@ -1118,19 +1109,20 @@ const styles = StyleSheet.create({
   },
   suggestionTagLabel: {
     fontSize: 10,
-    fontWeight: '700',
-    color: '#047857',
+    fontWeight: '800',
+    color: '#5ab9fc',
+    textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
   suggestionDurationBadge: {
-    fontSize: 11,
+    fontSize: 10,
+    color: '#8e9cb2',
     fontWeight: '600',
-    color: '#475569',
   },
   suggestionTitle: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#0f172a',
+    fontWeight: '700',
+    color: '#f1f5f9',
     marginBottom: 6,
   },
   suggestionTagsRow: {
@@ -1139,52 +1131,38 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   suggestionTagMini: {
-    backgroundColor: '#f1f5f9',
-    borderRadius: 4,
+    backgroundColor: '#1a2030',
     paddingHorizontal: 6,
     paddingVertical: 2,
+    borderRadius: 4,
   },
   suggestionTagMiniText: {
     fontSize: 10,
-    color: '#475569',
+    color: '#8e9cb2',
     fontWeight: '500',
-  },
-  classIndex: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#eff6ff',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  classIndexText: {
-    color: '#2563eb',
-    fontWeight: '700',
-    fontSize: 13,
   },
   classDetails: {
     flex: 1,
   },
   classSubject: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#0f172a',
+    fontWeight: '700',
+    color: '#f1f5f9',
     marginBottom: 2,
   },
   classTime: {
-    fontSize: 13,
-    color: '#2563eb',
-    fontWeight: '500',
+    fontSize: 12,
+    color: '#5ab9fc',
+    fontWeight: '600',
     marginBottom: 2,
   },
   classMeta: {
     fontSize: 12,
-    color: '#64748b',
+    color: '#8e9cb2',
   },
   arrowText: {
     fontSize: 18,
-    color: '#94a3b8',
+    color: '#627289',
     paddingHorizontal: 4,
   },
   detailContainer: {
@@ -1196,106 +1174,91 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   backButtonText: {
-    fontSize: 14,
-    color: '#2563eb',
-    fontWeight: '600',
+    fontSize: 13,
+    color: '#5ab9fc',
+    fontWeight: '700',
   },
   detailCard: {
     padding: 18,
-    backgroundColor: '#f8fafc',
-    borderRadius: 10,
+    backgroundColor: '#0f1420',
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
   },
   detailSubject: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#0f172a',
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#f1f5f9',
     marginBottom: 4,
   },
   detailSection: {
-    fontSize: 15,
-    color: '#475569',
+    fontSize: 14,
+    color: '#8e9cb2',
     fontWeight: '500',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   detailTime: {
-    fontSize: 15,
-    color: '#2563eb',
-    fontWeight: '600',
+    fontSize: 14,
+    color: '#5ab9fc',
+    fontWeight: '700',
     marginBottom: 16,
   },
   metaRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 6,
+    paddingVertical: 8,
     borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
+    borderTopColor: '#1f2738',
   },
   metaLabel: {
-    fontSize: 13,
-    color: '#64748b',
+    fontSize: 12,
+    color: '#8e9cb2',
   },
   metaValue: {
-    fontSize: 13,
-    color: '#0f172a',
-    fontWeight: '500',
+    fontSize: 12,
+    color: '#f1f5f9',
+    fontWeight: '600',
   },
   portalNav: {
     flexDirection: 'row',
-    marginBottom: 16,
-    borderRadius: 8,
-    backgroundColor: '#f1f5f9',
+    marginBottom: 18,
+    borderRadius: 12,
+    backgroundColor: '#0f1420',
     padding: 3,
+    borderWidth: 1,
+    borderColor: '#1f2738',
   },
   portalTab: {
     flex: 1,
+    minHeight: 44,
+    justifyContent: 'center',
     paddingVertical: 8,
     alignItems: 'center',
-    borderRadius: 6,
+    borderRadius: 8,
   },
-  portalTabActive: {
-    backgroundColor: '#ffffff',
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 1 },
-    shadowRadius: 2,
-    elevation: 1,
-  },
+  portalTabActive: { backgroundColor: '#25364e' },
+  scanTab: { backgroundColor: '#83cef9' },
+  scanTabText: { color: '#102033', fontWeight: '800' },
   portalTabText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
-    color: '#64748b',
+    color: '#8e9cb2',
   },
   portalTabTextActive: {
-    color: '#2563eb',
-  },
-  scanBanner: {
-    backgroundColor: '#eff6ff',
-    borderWidth: 1,
-    borderColor: '#bfdbfe',
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  scanBannerText: {
-    color: '#1d4ed8',
-    fontSize: 13,
-    fontWeight: '700',
+    color: '#f1f5f9',
+    fontWeight: '800',
   },
   scanActionButton: {
     marginTop: 14,
-    backgroundColor: '#2563eb',
-    borderRadius: 8,
-    paddingVertical: 10,
+    backgroundColor: '#5ab9fc',
+    borderRadius: 10,
+    paddingVertical: 12,
     alignItems: 'center',
   },
   scanActionButtonText: {
-    color: '#ffffff',
+    color: '#0a0d14',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '800',
   },
   attendanceContainer: {
     marginTop: 4,
@@ -1309,14 +1272,14 @@ const styles = StyleSheet.create({
   attendanceRefreshBtn: {
     paddingHorizontal: 10,
     paddingVertical: 5,
-    backgroundColor: '#eff6ff',
-    borderRadius: 6,
+    backgroundColor: '#1a2030',
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#bfdbfe',
+    borderColor: '#253046',
   },
   attendanceRefreshText: {
     fontSize: 12,
-    color: '#2563eb',
+    color: '#5ab9fc',
     fontWeight: '600',
   },
   emptyIcon: {
@@ -1325,11 +1288,11 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   summaryCard: {
-    backgroundColor: '#f8fafc',
-    borderRadius: 10,
+    backgroundColor: '#0f1420',
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    padding: 16,
+    borderColor: '#1f2738',
+    padding: 18,
     marginBottom: 16,
   },
   summaryTop: {
@@ -1337,157 +1300,168 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   summaryPercentText: {
-    fontSize: 36,
-    fontWeight: 'bold',
-    color: '#0f172a',
+    fontSize: 38,
+    fontWeight: '800',
+    color: '#f1f5f9',
+    letterSpacing: -1,
   },
   summaryLabel: {
-    fontSize: 13,
-    color: '#64748b',
+    fontSize: 12,
+    color: '#8e9cb2',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    fontWeight: '700',
     marginTop: 2,
-    fontWeight: '500',
   },
   progressBarBg: {
     height: 8,
-    backgroundColor: '#e2e8f0',
+    backgroundColor: '#1a2030',
     borderRadius: 4,
     overflow: 'hidden',
-    marginBottom: 14,
+    marginBottom: 16,
   },
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#2563eb',
+    backgroundColor: '#34d399',
     borderRadius: 4,
   },
   statsRow: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
+    justifyContent: 'space-between',
     paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#1f2738',
   },
   statCol: {
     alignItems: 'center',
+    flex: 1,
   },
   statNum: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#0f172a',
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#f1f5f9',
   },
   statPresent: {
-    color: '#16a34a',
+    color: '#34d399',
   },
   statAbsent: {
-    color: '#dc2626',
+    color: '#f87171',
   },
   statLabel: {
     fontSize: 11,
-    color: '#64748b',
+    color: '#8e9cb2',
     marginTop: 2,
+    fontWeight: '500',
   },
   subSectionTitle: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#334155',
-    marginBottom: 8,
-    marginTop: 6,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    color: '#f1f5f9',
+    marginBottom: 10,
+    marginTop: 4,
   },
   subjectList: {
     gap: 8,
     marginBottom: 16,
   },
   subjectCard: {
-    backgroundColor: '#ffffff',
-    borderRadius: 8,
+    backgroundColor: '#0f1420',
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    padding: 12,
+    borderColor: '#1f2738',
+    padding: 14,
   },
   subjectTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 4,
+    marginBottom: 8,
   },
   subjectName: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#0f172a',
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#f1f5f9',
   },
   subjectBadge: {
     paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 12,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
   badgeGood: {
-    backgroundColor: '#dcfce7',
+    backgroundColor: '#0b2e23',
+    borderWidth: 1,
+    borderColor: '#10b981',
   },
   badgeWarning: {
-    backgroundColor: '#fef3c7',
+    backgroundColor: '#38260b',
+    borderWidth: 1,
+    borderColor: '#d97706',
   },
   badgeDanger: {
-    backgroundColor: '#fee2e2',
+    backgroundColor: '#381418',
+    borderWidth: 1,
+    borderColor: '#ef4444',
   },
   subjectBadgeText: {
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   badgeTextGood: {
-    color: '#16a34a',
+    color: '#34d399',
   },
   badgeTextWarning: {
-    color: '#d97706',
+    color: '#fbbf24',
   },
   badgeTextDanger: {
-    color: '#dc2626',
+    color: '#f87171',
   },
   subjectCountsText: {
     fontSize: 12,
-    color: '#64748b',
+    color: '#8e9cb2',
     marginBottom: 8,
   },
   subjectProgressBarBg: {
-    height: 6,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 3,
+    height: 4,
+    backgroundColor: '#1a2030',
+    borderRadius: 2,
     overflow: 'hidden',
   },
   subjectProgressBarFill: {
     height: '100%',
-    borderRadius: 3,
+    backgroundColor: '#34d399',
+    borderRadius: 2,
   },
   recordList: {
     gap: 8,
+    marginBottom: 16,
   },
   recordCard: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#ffffff',
-    borderRadius: 8,
+    backgroundColor: '#0f1420',
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
     padding: 12,
   },
   recordDetails: {
     flex: 1,
   },
   recordSubject: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#0f172a',
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#f1f5f9',
     marginBottom: 2,
   },
   recordMeta: {
-    fontSize: 12,
-    color: '#64748b',
-    marginBottom: 2,
+    fontSize: 11,
+    color: '#8e9cb2',
   },
   recordSection: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: '#5ab9fc',
+    marginTop: 2,
   },
   recordStatusBadge: {
     paddingHorizontal: 8,
@@ -1496,20 +1470,24 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   recordStatusPresent: {
-    backgroundColor: '#dcfce7',
+    backgroundColor: '#0b2e23',
+    borderWidth: 1,
+    borderColor: '#10b981',
   },
   recordStatusAbsent: {
-    backgroundColor: '#fee2e2',
+    backgroundColor: '#381418',
+    borderWidth: 1,
+    borderColor: '#ef4444',
   },
   recordStatusText: {
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 11,
+    fontWeight: '700',
   },
   recordStatusTextPresent: {
-    color: '#16a34a',
+    color: '#34d399',
   },
   recordStatusTextAbsent: {
-    color: '#dc2626',
+    color: '#f87171',
   },
   profileContainer: {
     marginTop: 4,
@@ -1523,19 +1501,19 @@ const styles = StyleSheet.create({
   profileRefreshBtn: {
     paddingHorizontal: 10,
     paddingVertical: 5,
-    backgroundColor: '#eff6ff',
-    borderRadius: 6,
+    backgroundColor: '#1a2030',
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#bfdbfe',
+    borderColor: '#253046',
   },
   profileRefreshText: {
     fontSize: 12,
-    color: '#2563eb',
+    color: '#5ab9fc',
     fontWeight: '600',
   },
   profileSubtitle: {
     fontSize: 13,
-    color: '#64748b',
+    color: '#8e9cb2',
     lineHeight: 18,
     marginBottom: 16,
   },
@@ -1545,16 +1523,16 @@ const styles = StyleSheet.create({
   feedbackBanner: {
     paddingVertical: 10,
     paddingHorizontal: 12,
-    borderRadius: 8,
+    borderRadius: 10,
     borderWidth: 1,
   },
   feedbackSuccess: {
-    backgroundColor: '#f0fdf4',
-    borderColor: '#bbf7d0',
+    backgroundColor: '#0b2e23',
+    borderColor: '#10b981',
   },
   feedbackError: {
-    backgroundColor: '#fef2f2',
-    borderColor: '#fecaca',
+    backgroundColor: '#381418',
+    borderColor: '#ef4444',
   },
   feedbackText: {
     fontSize: 13,
@@ -1562,38 +1540,39 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   feedbackTextSuccess: {
-    color: '#166534',
+    color: '#34d399',
   },
   feedbackTextError: {
-    color: '#991b1b',
+    color: '#f87171',
   },
   inputGroup: {
-    backgroundColor: '#f8fafc',
-    borderRadius: 10,
+    backgroundColor: '#0f1420',
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    padding: 14,
+    borderColor: '#1f2738',
+    padding: 16,
   },
   inputLabel: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0f172a',
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#f1f5f9',
     marginBottom: 2,
+    letterSpacing: 0.3,
   },
   inputHint: {
     fontSize: 12,
-    color: '#64748b',
+    color: '#8e9cb2',
     marginBottom: 10,
   },
   textInput: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#1a2030',
     borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+    borderColor: '#253046',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     fontSize: 14,
-    color: '#0f172a',
+    color: '#f1f5f9',
   },
   tagInputRow: {
     flexDirection: 'row',
@@ -1604,16 +1583,16 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   addTagButton: {
-    backgroundColor: '#2563eb',
+    backgroundColor: '#5ab9fc',
     paddingHorizontal: 14,
-    borderRadius: 8,
+    borderRadius: 10,
     justifyContent: 'center',
     alignItems: 'center',
   },
   addTagButtonText: {
-    color: '#ffffff',
+    color: '#0a0d14',
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '800',
   },
   tagsContainer: {
     flexDirection: 'row',
@@ -1624,9 +1603,9 @@ const styles = StyleSheet.create({
   tagChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#eff6ff',
+    backgroundColor: '#102235',
     borderWidth: 1,
-    borderColor: '#bfdbfe',
+    borderColor: 'rgba(90, 185, 252, 0.4)',
     borderRadius: 16,
     paddingVertical: 4,
     paddingLeft: 10,
@@ -1635,36 +1614,36 @@ const styles = StyleSheet.create({
   },
   tagChipText: {
     fontSize: 12,
-    color: '#1d4ed8',
-    fontWeight: '600',
+    color: '#5ab9fc',
+    fontWeight: '700',
   },
   tagChipStrength: {
-    backgroundColor: '#f0fdf4',
-    borderColor: '#bbf7d0',
+    backgroundColor: '#0b2e23',
+    borderColor: '#10b981',
   },
   tagChipTextStrength: {
-    color: '#15803d',
+    color: '#34d399',
   },
   removeTagBtn: {
     width: 16,
     height: 16,
     borderRadius: 8,
-    backgroundColor: '#dbeafe',
+    backgroundColor: '#1a2030',
     alignItems: 'center',
     justifyContent: 'center',
   },
   removeTagText: {
     fontSize: 9,
-    color: '#1d4ed8',
+    color: '#8e9cb2',
     fontWeight: 'bold',
   },
   suggestionsLabel: {
-    fontSize: 11,
-    color: '#94a3b8',
-    fontWeight: '600',
+    fontSize: 10,
+    color: '#627289',
+    fontWeight: '800',
     marginBottom: 6,
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0.8,
   },
   suggestionRow: {
     flexDirection: 'row',
@@ -1672,24 +1651,24 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   suggestionChip: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#1a2030',
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 12,
-    paddingVertical: 3,
-    paddingHorizontal: 8,
+    borderColor: '#253046',
+    borderRadius: 10,
+    paddingVertical: 4,
+    paddingHorizontal: 9,
   },
   suggestionChipSelected: {
-    backgroundColor: '#f1f5f9',
-    borderColor: '#cbd5e1',
+    backgroundColor: '#0f1420',
+    borderColor: '#1f2738',
   },
   suggestionChipText: {
     fontSize: 11,
-    color: '#475569',
-    fontWeight: '500',
+    color: '#8e9cb2',
+    fontWeight: '600',
   },
   suggestionChipTextSelected: {
-    color: '#94a3b8',
+    color: '#627289',
     textDecorationLine: 'line-through',
   },
   actionButtonsRow: {
@@ -1699,29 +1678,34 @@ const styles = StyleSheet.create({
   },
   saveProfileButton: {
     flex: 2,
-    backgroundColor: '#2563eb',
+    backgroundColor: '#5ab9fc',
     paddingVertical: 12,
-    borderRadius: 8,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#5ab9fc',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 3,
   },
   saveProfileButtonText: {
-    color: '#ffffff',
+    color: '#0a0d14',
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   clearProfileButton: {
     flex: 1,
-    backgroundColor: '#f1f5f9',
+    backgroundColor: '#1a2030',
     borderWidth: 1,
-    borderColor: '#cbd5e1',
+    borderColor: '#253046',
     paddingVertical: 12,
-    borderRadius: 8,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
   },
   clearProfileButtonText: {
-    color: '#475569',
+    color: '#8e9cb2',
     fontSize: 14,
     fontWeight: '600',
   },

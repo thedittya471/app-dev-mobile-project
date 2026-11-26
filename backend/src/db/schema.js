@@ -31,7 +31,7 @@ export const sessions = pgTable('sessions', {
 export const sections = pgTable('sections', {
   id: uuid('id').defaultRandom().primaryKey(),
   name: varchar('name', { length: 255 }).notNull(),
-  timezone: varchar('timezone', { length: 100 }).notNull().default('America/New_York'),
+  timezone: varchar('timezone', { length: 100 }).notNull().default('Asia/Kolkata'),
   schoolDayStart: varchar('school_day_start', { length: 10 }).notNull().default('09:00'),
   schoolDayEnd: varchar('school_day_end', { length: 10 }).notNull().default('17:00'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

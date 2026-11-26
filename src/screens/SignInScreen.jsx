@@ -1,193 +1,168 @@
 import { useState } from 'react';
 import {
+  ActivityIndicator,
+  ScrollView,
   StyleSheet,
   Text,
-  View,
   TextInput,
   TouchableOpacity,
-  ActivityIndicator,
+  View,
+  useWindowDimensions,
 } from 'react-native';
 import { signIn } from '../services/auth';
 
-export default function SignInScreen({ onSignInSuccess }) {
+const showTestAccounts = __DEV__ && process.env.EXPO_PUBLIC_SHOW_TEST_ACCOUNTS === 'true';
+const testAccounts = [
+  { label: 'Sample teacher', email: 'teacher@pilot.edu' },
+  { label: 'Sample student', email: 'student1@pilot.edu' },
+];
+
+export default function SignInScreen({ initialError, onSignInSuccess }) {
+  const { width } = useWindowDimensions();
+  const wide = width >= 800;
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
+  const [error, setError] = useState(initialError);
 
-  async function handleSignIn() {
-    if (!email || !password) {
-      setErrorMessage('Please enter email and password');
+  async function handleSignIn(address = email, secret = password) {
+    if (loading) return;
+    if (!address.trim() || !secret) {
+      setError('Enter your institutional email and password.');
       return;
     }
 
     setLoading(true);
-    setErrorMessage('');
+    setError('');
     try {
-      const user = await signIn(email, password);
-      onSignInSuccess(user);
-    } catch (err) {
-      setErrorMessage(err.message || 'Invalid credentials');
+      onSignInSuccess(await signIn(address, secret));
+    } catch (error) {
+      setError(error.message);
     } finally {
       setLoading(false);
     }
   }
 
-  function fillCredentials(fillEmail) {
-    setEmail(fillEmail);
-    setPassword('password123');
-    setErrorMessage('');
-  }
-
   return (
-    <View style={styles.card}>
-      <Text style={styles.title}>Sign In</Text>
-      <Text style={styles.subtitle}>Student Attendance & Planner</Text>
-
-      {errorMessage ? (
-        <View style={styles.errorBox}>
-          <Text style={styles.errorText}>{errorMessage}</Text>
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <View style={[styles.layout, wide && styles.layoutWide]}>
+        <View style={[styles.intro, wide && styles.introWide]}>
+          <Text style={styles.brand}>CampusPulse</Text>
+          <Text accessibilityRole="header" style={[styles.title, wide && styles.titleWide]}>
+            Attendance and daily planning
+          </Text>
+          <Text style={styles.description}>
+            Check in to class, review attendance, and find study activities that fit your timetable.
+          </Text>
         </View>
-      ) : null}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
-        value={email}
-        onChangeText={setEmail}
-        autoCapitalize="none"
-        keyboardType="email-address"
-        editable={!loading}
-      />
+        <View style={[styles.form, wide && styles.formWide]}>
+          <Text accessibilityRole="header" style={styles.formTitle}>Sign in</Text>
+          {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-        editable={!loading}
-      />
+          <View style={styles.field}>
+            <Text style={styles.label}>Institutional email</Text>
+            <TextInput
+              accessibilityLabel="Institutional email"
+              style={styles.input}
+              value={email}
+              onChangeText={setEmail}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="username"
+              keyboardType="email-address"
+              editable={!loading}
+            />
+          </View>
 
-      <TouchableOpacity
-        style={[styles.button, loading && styles.buttonDisabled]}
-        onPress={handleSignIn}
-        disabled={loading}
-      >
-        {loading ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.buttonText}>Sign In</Text>
-        )}
-      </TouchableOpacity>
+          <View style={styles.field}>
+            <Text style={styles.label}>Password</Text>
+            <TextInput
+              accessibilityLabel="Password"
+              style={styles.input}
+              value={password}
+              onChangeText={setPassword}
+              autoComplete="current-password"
+              secureTextEntry
+              editable={!loading}
+              returnKeyType="go"
+              onSubmitEditing={() => handleSignIn()}
+            />
+          </View>
 
-      <View style={styles.demoSection}>
-        <Text style={styles.demoLabel}>Quick fill demo accounts:</Text>
-        <View style={styles.demoButtons}>
           <TouchableOpacity
-            style={styles.demoButton}
-            onPress={() => fillCredentials('teacher@pilot.edu')}
+            accessibilityRole="button"
+            accessibilityState={{ busy: loading, disabled: loading }}
+            style={[styles.submit, loading && styles.disabled]}
+            onPress={() => handleSignIn()}
             disabled={loading}
           >
-            <Text style={styles.demoButtonText}>Teacher</Text>
+            {loading ? <ActivityIndicator color="#102033" /> : <Text style={styles.submitText}>Sign in</Text>}
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.demoButton}
-            onPress={() => fillCredentials('student1@pilot.edu')}
-            disabled={loading}
-          >
-            <Text style={styles.demoButtonText}>Student</Text>
-          </TouchableOpacity>
+
+          {showTestAccounts ? (
+            <View style={styles.testAccounts}>
+              <Text style={styles.testLabel}>Local test database</Text>
+              <View style={styles.testButtons}>
+                {testAccounts.map((account) => (
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    key={account.email}
+                    onPress={() => handleSignIn(account.email, 'password123')}
+                    disabled={loading}
+                    style={styles.testButton}
+                  >
+                    <Text style={styles.testButtonText}>{account.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          ) : null}
         </View>
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    width: '100%',
-    maxWidth: 360,
-    padding: 24,
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#0f172a',
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#64748b',
-    marginBottom: 20,
-  },
-  input: {
-    height: 48,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    marginBottom: 12,
-    fontSize: 16,
-    color: '#0f172a',
-  },
-  button: {
-    height: 48,
-    backgroundColor: '#2563eb',
-    borderRadius: 8,
+  page: {
+    flexGrow: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 36,
   },
-  buttonDisabled: {
-    backgroundColor: '#93c5fd',
-  },
-  buttonText: {
-    color: '#ffffff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  errorBox: {
-    backgroundColor: '#fee2e2',
+  layout: { width: '100%', maxWidth: 460, gap: 28 },
+  layoutWide: { maxWidth: 960, flexDirection: 'row', alignItems: 'center', gap: 72 },
+  intro: { paddingHorizontal: 4, gap: 12 },
+  introWide: { flex: 1, paddingHorizontal: 0, gap: 18 },
+  brand: { color: '#83cef9', fontSize: 15, fontWeight: '800' },
+  title: { color: '#f1f5f9', fontSize: 32, lineHeight: 37, fontWeight: '800', letterSpacing: -0.8 },
+  titleWide: { fontSize: 51, lineHeight: 55, letterSpacing: -1.5 },
+  description: { color: '#a9bad0', fontSize: 16, lineHeight: 24, maxWidth: 370 },
+  form: { gap: 18, padding: 22, backgroundColor: '#131824', borderColor: '#29364b', borderWidth: 1, borderRadius: 16 },
+  formWide: { width: 402, padding: 30 },
+  formTitle: { color: '#f1f5f9', fontSize: 24, fontWeight: '700' },
+  field: { gap: 7 },
+  label: { color: '#dce7f4', fontSize: 14, fontWeight: '600' },
+  input: {
+    minHeight: 48,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#f1f5f9',
+    backgroundColor: '#0d1320',
+    borderColor: '#42536d',
     borderWidth: 1,
-    borderColor: '#fca5a5',
     borderRadius: 8,
-    padding: 10,
-    marginBottom: 12,
+    fontSize: 16,
   },
-  errorText: {
-    color: '#b91c1c',
-    fontSize: 14,
-  },
-  demoSection: {
-    marginTop: 20,
-    borderTopWidth: 1,
-    borderTopColor: '#f1f5f9',
-    paddingTop: 16,
-  },
-  demoLabel: {
-    fontSize: 12,
-    color: '#64748b',
-    marginBottom: 8,
-  },
-  demoButtons: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  demoButton: {
-    flex: 1,
-    paddingVertical: 8,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 6,
-    alignItems: 'center',
-  },
-  demoButtonText: {
-    fontSize: 13,
-    color: '#334155',
-    fontWeight: '500',
-  },
+  error: { color: '#ffc3c5', backgroundColor: '#381418', borderRadius: 8, padding: 10, fontSize: 14, lineHeight: 20 },
+  submit: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 8, backgroundColor: '#83cef9' },
+  submitText: { color: '#102033', fontSize: 15, fontWeight: '800' },
+  disabled: { opacity: 0.65 },
+  testAccounts: { borderTopWidth: 1, borderColor: '#29364b', paddingTop: 16, gap: 8 },
+  testLabel: { color: '#a9bad0', fontSize: 13 },
+  testButtons: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  testButton: { borderWidth: 1, borderColor: '#42536d', borderRadius: 8, minHeight: 44, paddingHorizontal: 12, justifyContent: 'center' },
+  testButtonText: { color: '#dce7f4', fontSize: 13, fontWeight: '600' },
 });

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -13,6 +13,7 @@ import { submitCheckIn } from '../services/attendance';
 
 export default function StudentScanScreen({ onBack }) {
   const [permission, requestPermission] = useCameraPermissions();
+  const [cameraFailed, setCameraFailed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [successData, setSuccessData] = useState(null);
   const [errorData, setErrorData] = useState(null);
@@ -22,14 +23,7 @@ export default function StudentScanScreen({ onBack }) {
   // Ref lock to completely suppress repeated camera callbacks while processing
   const isSubmittingRef = useRef(false);
 
-  // Auto-request camera permission on mount
-  useEffect(() => {
-    if (!permission || !permission.granted) {
-      requestPermission();
-    }
-  }, [permission, requestPermission]);
-
-  const processPayload = useCallback(async (rawString) => {
+  async function processPayload(rawString) {
     if (isSubmittingRef.current) return;
     isSubmittingRef.current = true;
     setSubmitting(true);
@@ -38,21 +32,22 @@ export default function StudentScanScreen({ onBack }) {
     try {
       let parsed;
       try {
-        parsed = typeof rawString === 'string' ? JSON.parse(rawString.trim()) : rawString;
+        parsed = JSON.parse(rawString.trim());
       } catch {
-        throw new Error('Malformed QR code. Please scan the classroom check-in QR code.');
+        throw new Error('Invalid QR payload. Use the current classroom QR code.');
       }
 
-      if (!parsed || typeof parsed !== 'object' || !parsed.sessionId || !parsed.code) {
-        throw new Error('QR code missing session or code information.');
+      if (
+        !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(parsed?.sessionId) ||
+        !/^[a-f0-9]{32}$/i.test(parsed?.code)
+      ) {
+        throw new Error('Invalid QR payload. Use the current classroom QR code.');
       }
 
-      const result = await submitCheckIn({
-        sessionId: parsed.sessionId,
-        code: parsed.code,
-      });
-
-      // Attendance confirmed by server
+      const result = await submitCheckIn({ sessionId: parsed.sessionId, code: parsed.code });
+      if (result.record?.status !== 'present') {
+        throw new Error('The server did not confirm attendance. Ask your teacher to review it.');
+      }
       setSuccessData(result);
     } catch (err) {
       const msg = err.message || 'Check-in failed';
@@ -81,7 +76,7 @@ export default function StudentScanScreen({ onBack }) {
     } finally {
       setSubmitting(false);
     }
-  }, []);
+  }
 
   function handleBarcodeScanned({ data }) {
     if (isSubmittingRef.current || submitting || successData || errorData) {
@@ -103,74 +98,16 @@ export default function StudentScanScreen({ onBack }) {
     processPayload(manualPayload);
   }
 
-  // 1. Permission Denied State
-  if (permission && !permission.granted) {
-    return (
-      <View style={styles.container}>
-        <View style={styles.card}>
-          <TouchableOpacity style={styles.backButton} onPress={onBack}>
-            <Text style={styles.backButtonText}>{'← Back to Today'}</Text>
-          </TouchableOpacity>
-
-          <View style={styles.alertCard}>
-            <View style={styles.alertIconCircle}>
-              <Text style={styles.alertIconText}>📷</Text>
-            </View>
-            <Text style={styles.alertTitle}>Camera Access Required</Text>
-            <Text style={styles.alertBody}>
-              Camera permission is required to scan the classroom attendance QR code displayed by your teacher.
-            </Text>
-
-            <TouchableOpacity style={styles.primaryButton} onPress={requestPermission}>
-              <Text style={styles.primaryButtonText}>Grant Camera Permission</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={() => setShowManualInput(!showManualInput)}
-            >
-              <Text style={styles.secondaryButtonText}>
-                {showManualInput ? 'Hide Manual Input' : 'Enter QR Code Manually'}
-              </Text>
-            </TouchableOpacity>
-
-            {showManualInput ? (
-              <View style={styles.manualBox}>
-                <Text style={styles.manualLabel}>Paste QR Payload JSON:</Text>
-                <TextInput
-                  style={styles.manualInput}
-                  placeholder='{"sessionId":"...","code":"..."}'
-                  placeholderTextColor="#94a3b8"
-                  value={manualPayload}
-                  onChangeText={setManualPayload}
-                  autoCapitalize="none"
-                />
-                <TouchableOpacity
-                  style={[styles.primaryButton, !manualPayload.trim() && styles.buttonDisabled]}
-                  onPress={handleManualSubmit}
-                  disabled={!manualPayload.trim()}
-                >
-                  <Text style={styles.primaryButtonText}>Submit Code</Text>
-                </TouchableOpacity>
-              </View>
-            ) : null}
-          </View>
-        </View>
-      </View>
-    );
-  }
-
-  // 2. Success State
   if (successData) {
     const isRepeat = successData.repeated;
     return (
-      <View style={styles.container}>
+      <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={styles.card}>
           <View style={styles.successCard}>
             <View style={styles.successIconCircle}>
               <Text style={styles.successCheckText}>✓</Text>
             </View>
-            <Text style={styles.successTitle}>
+            <Text accessibilityRole="header" style={styles.successTitle}>
               {isRepeat ? 'Attendance Already Confirmed' : 'Check-In Confirmed!'}
             </Text>
             <Text style={styles.successSubtitle}>
@@ -184,7 +121,7 @@ export default function StudentScanScreen({ onBack }) {
                 <Text style={styles.detailLabel}>Status:</Text>
                 <View style={styles.presentBadge}>
                   <Text style={styles.presentBadgeText}>
-                    {successData.record?.status?.toUpperCase() || 'PRESENT'}
+                    {successData.record.status.toUpperCase()}
                   </Text>
                 </View>
               </View>
@@ -192,39 +129,36 @@ export default function StudentScanScreen({ onBack }) {
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Recorded At:</Text>
                 <Text style={styles.detailValue}>
-                  {successData.record?.recordedAt
-                    ? new Date(successData.record.recordedAt).toLocaleTimeString()
-                    : new Date().toLocaleTimeString()}
+                  {new Date(successData.record.recordedAt).toLocaleString()}
                 </Text>
               </View>
 
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Method:</Text>
                 <Text style={styles.detailValue}>
-                  {successData.record?.method || 'QR Scan'}
+                  {successData.record.method === 'qr_scan' ? 'QR scan' : 'Teacher entry'}
                 </Text>
               </View>
             </View>
 
-            <TouchableOpacity style={styles.primaryButton} onPress={onBack}>
+            <TouchableOpacity accessibilityRole="button" style={styles.primaryButton} onPress={onBack}>
               <Text style={styles.primaryButtonText}>Back to Today</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.secondaryButton} onPress={handleRetry}>
+            <TouchableOpacity accessibilityRole="button" style={styles.secondaryButton} onPress={handleRetry}>
               <Text style={styles.secondaryButtonText}>Scan Another Code</Text>
             </TouchableOpacity>
           </View>
         </View>
-      </View>
+      </ScrollView>
     );
   }
 
-  // 3. Error State (Actionable Feedback)
   if (errorData) {
     return (
-      <View style={styles.container}>
+      <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={styles.card}>
-          <TouchableOpacity style={styles.backButton} onPress={onBack}>
+          <TouchableOpacity accessibilityRole="button" style={styles.backButton} onPress={onBack}>
             <Text style={styles.backButtonText}>{'← Back to Today'}</Text>
           </TouchableOpacity>
 
@@ -232,38 +166,43 @@ export default function StudentScanScreen({ onBack }) {
             <View style={styles.errorIconCircle}>
               <Text style={styles.errorIconText}>!</Text>
             </View>
-            <Text style={styles.errorTitle}>{errorData.title}</Text>
+            <Text accessibilityRole="alert" style={styles.errorTitle}>{errorData.title}</Text>
             <Text style={styles.errorReason}>{errorData.message}</Text>
             <Text style={styles.errorHint}>{errorData.actionHint}</Text>
 
-            <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
-              <Text style={styles.retryButtonText}>Try Scanning Again</Text>
+            <TouchableOpacity accessibilityRole="button" style={styles.retryButton} onPress={handleRetry}>
+              <Text style={styles.retryButtonText}>Try again</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.secondaryButton} onPress={onBack}>
+            <TouchableOpacity accessibilityRole="button" style={styles.secondaryButton} onPress={onBack}>
               <Text style={styles.secondaryButtonText}>Return to Today</Text>
             </TouchableOpacity>
           </View>
         </View>
-      </View>
+      </ScrollView>
     );
   }
 
-  // 4. Active Scanner View
+  function handleCameraError() {
+    setCameraFailed(true);
+    setShowManualInput(true);
+  }
+
   return (
-    <ScrollView contentContainerStyle={styles.scrollContainer}>
+    <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
       <View style={styles.card}>
         <View style={styles.headerRow}>
-          <TouchableOpacity style={styles.backButton} onPress={onBack}>
+          <TouchableOpacity accessibilityRole="button" style={styles.backButton} onPress={onBack}>
             <Text style={styles.backButtonText}>{'← Back to Today'}</Text>
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Scan Classroom QR</Text>
+          <Text accessibilityRole="header" style={styles.headerTitle}>Scan classroom QR</Text>
         </View>
 
         <Text style={styles.scannerInstruction}>
           Point camera at the QR code displayed on the teacher’s screen or projector.
         </Text>
 
+        {permission?.granted && !cameraFailed ? (
         <View style={styles.cameraFrame}>
           <CameraView
             style={StyleSheet.absoluteFillObject}
@@ -271,6 +210,7 @@ export default function StudentScanScreen({ onBack }) {
             barcodeScannerSettings={{
               barcodeTypes: ['qr'],
             }}
+            onMountError={handleCameraError}
             onBarcodeScanned={submitting ? undefined : handleBarcodeScanned}
           />
 
@@ -286,33 +226,53 @@ export default function StudentScanScreen({ onBack }) {
 
           {submitting ? (
             <View style={styles.submittingOverlay}>
-              <ActivityIndicator size="large" color="#ffffff" />
+              <ActivityIndicator size="large" color="#5ab9fc" />
               <Text style={styles.submittingText}>Verifying attendance...</Text>
             </View>
           ) : null}
         </View>
+        ) : (
+          <View style={styles.alertCard}>
+            <Text style={styles.alertBody}>
+              {cameraFailed
+                ? 'The camera could not start. Paste the active QR payload or ask your teacher to mark you present.'
+                : permission?.canAskAgain === false
+                  ? 'Allow camera access in settings, paste the active QR payload, or ask your teacher to mark you present.'
+                  : 'Enable camera access to scan the classroom code.'}
+            </Text>
+            {!permission?.granted && permission?.canAskAgain ? (
+              <TouchableOpacity accessibilityRole="button" style={styles.primaryButton} onPress={requestPermission}>
+                <Text style={styles.primaryButtonText}>Enable camera</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        )}
 
         <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityState={{ expanded: showManualInput }}
           style={styles.toggleManualButton}
           onPress={() => setShowManualInput(!showManualInput)}
         >
           <Text style={styles.toggleManualText}>
-            {showManualInput ? '▲ Hide Code Input' : '▼ Having camera issues? Enter QR code'}
+            {showManualInput ? 'Hide QR input' : 'Paste QR payload'}
           </Text>
         </TouchableOpacity>
 
         {showManualInput ? (
           <View style={styles.manualBox}>
-            <Text style={styles.manualLabel}>Paste QR Payload JSON:</Text>
+            <Text style={styles.manualLabel}>Active QR payload</Text>
             <TextInput
               style={styles.manualInput}
-              placeholder='{"sessionId":"...","code":"..."}'
+              accessibilityLabel="Active QR payload"
+              placeholder="Paste the full payload"
               placeholderTextColor="#94a3b8"
               value={manualPayload}
               onChangeText={setManualPayload}
               autoCapitalize="none"
+              autoCorrect={false}
             />
-            <TouchableOpacity
+            <TouchableOpacity accessibilityRole="button"
               style={[
                 styles.primaryButton,
                 (!manualPayload.trim() || submitting) && styles.buttonDisabled,
@@ -334,67 +294,69 @@ export default function StudentScanScreen({ onBack }) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    width: '100%',
-    maxWidth: 500,
-    padding: 16,
-  },
   scrollContainer: {
-    width: '100%',
-    maxWidth: 500,
+    paddingHorizontal: 12,
+    paddingVertical: 24,
     alignItems: 'center',
-    paddingVertical: 12,
+    width: '100%',
   },
   card: {
     width: '100%',
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 20,
+    maxWidth: 520,
+    backgroundColor: '#131824',
+    borderRadius: 20,
+    padding: 24,
     shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 8,
-    elevation: 2,
+    shadowOpacity: 0.4,
+    shadowOffset: { width: 0, height: 12 },
+    shadowRadius: 24,
+    elevation: 8,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
   },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 16,
   },
   headerTitle: {
+    flexShrink: 1,
     fontSize: 16,
     fontWeight: '700',
-    color: '#0f172a',
+    color: '#f1f5f9',
     marginLeft: 12,
   },
   backButton: {
+    minHeight: 44,
     paddingVertical: 6,
-    paddingHorizontal: 10,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 6,
+    paddingHorizontal: 12,
+    backgroundColor: '#1a2030',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#253046',
     alignSelf: 'flex-start',
   },
   backButtonText: {
-    color: '#475569',
-    fontSize: 13,
+    color: '#8e9cb2',
+    fontSize: 12,
     fontWeight: '600',
   },
   scannerInstruction: {
     fontSize: 13,
-    color: '#64748b',
+    color: '#8e9cb2',
     marginBottom: 16,
     lineHeight: 18,
   },
   cameraFrame: {
     width: '100%',
     height: 320,
-    borderRadius: 12,
+    borderRadius: 16,
     overflow: 'hidden',
-    backgroundColor: '#0f172a',
+    backgroundColor: '#0a0d14',
     position: 'relative',
     marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#1f2738',
   },
   viewfinderOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -410,7 +372,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     width: 24,
     height: 24,
-    borderColor: '#22c55e',
+    borderColor: '#5ab9fc',
   },
   topLeft: {
     top: 0,
@@ -438,119 +400,125 @@ const styles = StyleSheet.create({
   },
   submittingOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    backgroundColor: 'rgba(10, 13, 20, 0.85)',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 10,
   },
   submittingText: {
-    color: '#ffffff',
+    color: '#f1f5f9',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
     marginTop: 10,
   },
   toggleManualButton: {
-    paddingVertical: 8,
+    minHeight: 44,
+    paddingVertical: 10,
     alignItems: 'center',
   },
   toggleManualText: {
-    color: '#2563eb',
+    color: '#5ab9fc',
     fontSize: 13,
     fontWeight: '600',
   },
   manualBox: {
     marginTop: 12,
-    padding: 14,
-    backgroundColor: '#f8fafc',
-    borderRadius: 8,
+    padding: 16,
+    backgroundColor: '#0f1420',
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
   },
   manualLabel: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#475569',
-    marginBottom: 6,
+    fontWeight: '700',
+    color: '#8e9cb2',
+    marginBottom: 8,
   },
   manualInput: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#1a2030',
     borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 6,
-    padding: 10,
-    fontSize: 12,
+    borderColor: '#253046',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 13,
+    color: '#f1f5f9',
     fontFamily: 'monospace',
-    marginBottom: 10,
+    marginBottom: 12,
   },
   primaryButton: {
-    backgroundColor: '#2563eb',
+    minHeight: 44,
+    backgroundColor: '#5ab9fc',
     paddingVertical: 12,
-    borderRadius: 8,
+    borderRadius: 10,
     alignItems: 'center',
     marginTop: 8,
     width: '100%',
   },
   primaryButtonText: {
-    color: '#ffffff',
+    color: '#0a0d14',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '800',
   },
   secondaryButton: {
+    minHeight: 44,
     paddingVertical: 10,
     alignItems: 'center',
     marginTop: 8,
     width: '100%',
   },
   secondaryButtonText: {
-    color: '#64748b',
+    color: '#5ab9fc',
     fontSize: 13,
     fontWeight: '600',
   },
   buttonDisabled: {
-    backgroundColor: '#93c5fd',
+    backgroundColor: '#1a2030',
   },
   // Success Card styles
   successCard: {
     alignItems: 'center',
-    paddingVertical: 16,
+    paddingVertical: 20,
   },
   successIconCircle: {
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: '#dcfce7',
+    backgroundColor: '#0b2e23',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#10b981',
   },
   successCheckText: {
     fontSize: 32,
-    color: '#16a34a',
+    color: '#34d399',
     fontWeight: 'bold',
   },
   successTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#166534',
+    fontSize: 19,
+    fontWeight: '800',
+    color: '#f1f5f9',
     textAlign: 'center',
     marginBottom: 6,
   },
   successSubtitle: {
     fontSize: 13,
-    color: '#64748b',
+    color: '#8e9cb2',
     textAlign: 'center',
     marginBottom: 20,
     lineHeight: 18,
   },
   resultDetailsBox: {
     width: '100%',
-    backgroundColor: '#f8fafc',
-    borderRadius: 8,
-    padding: 14,
+    backgroundColor: '#0f1420',
+    borderRadius: 12,
+    padding: 16,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#1f2738',
     marginBottom: 20,
-    gap: 8,
+    gap: 10,
   },
   detailRow: {
     flexDirection: 'row',
@@ -559,107 +527,89 @@ const styles = StyleSheet.create({
   },
   detailLabel: {
     fontSize: 13,
-    color: '#64748b',
+    color: '#8e9cb2',
     fontWeight: '500',
   },
   detailValue: {
     fontSize: 13,
-    color: '#0f172a',
+    color: '#f1f5f9',
     fontWeight: '600',
   },
   presentBadge: {
-    backgroundColor: '#dcfce7',
+    backgroundColor: '#0b2e23',
+    borderWidth: 1,
+    borderColor: '#10b981',
     paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
   presentBadgeText: {
-    color: '#16a34a',
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#34d399',
   },
   // Error Card styles
   errorCard: {
     alignItems: 'center',
-    paddingVertical: 16,
+    paddingVertical: 20,
   },
   errorIconCircle: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#fee2e2',
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#381418',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#ef4444',
   },
   errorIconText: {
     fontSize: 28,
-    color: '#dc2626',
-    fontWeight: 'bold',
   },
   errorTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#991b1b',
+    fontSize: 19,
+    fontWeight: '800',
+    color: '#f1f5f9',
     textAlign: 'center',
     marginBottom: 6,
   },
   errorReason: {
     fontSize: 13,
-    color: '#dc2626',
+    color: '#fca5a5',
     textAlign: 'center',
     marginBottom: 8,
-    lineHeight: 18,
+    fontWeight: '600',
   },
   errorHint: {
     fontSize: 12,
-    color: '#64748b',
+    color: '#8e9cb2',
     textAlign: 'center',
-    marginBottom: 18,
-    lineHeight: 16,
+    marginBottom: 20,
+    lineHeight: 18,
   },
   retryButton: {
-    backgroundColor: '#dc2626',
+    backgroundColor: '#ef4444',
     paddingVertical: 12,
-    borderRadius: 8,
+    borderRadius: 10,
     alignItems: 'center',
-    marginTop: 8,
     width: '100%',
   },
   retryButtonText: {
     color: '#ffffff',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   // Alert Card styles
   alertCard: {
     alignItems: 'center',
-    paddingVertical: 16,
-  },
-  alertIconCircle: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#fef3c7',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  alertIconText: {
-    fontSize: 26,
-  },
-  alertTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#92400e',
-    textAlign: 'center',
-    marginBottom: 6,
+    paddingVertical: 20,
   },
   alertBody: {
     fontSize: 13,
-    color: '#78350f',
+    color: '#8e9cb2',
     textAlign: 'center',
-    marginBottom: 18,
+    marginBottom: 20,
     lineHeight: 18,
   },
 });

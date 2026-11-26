@@ -1,0 +1,1 @@
+ALTER TABLE "sections" ALTER COLUMN "timezone" SET DEFAULT 'Asia/Kolkata';

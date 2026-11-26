@@ -1,64 +1,41 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_BASE_URL } from '../config/api';
+import { request } from './api';
 
 const TOKEN_KEY = 'attendance_session_token';
 
-export async function saveToken(token) {
-  await AsyncStorage.setItem(TOKEN_KEY, token);
-}
-
-export async function getToken() {
-  return await AsyncStorage.getItem(TOKEN_KEY);
-}
-
-export async function clearToken() {
-  await AsyncStorage.removeItem(TOKEN_KEY);
-}
-
 export async function signIn(email, password) {
-  const res = await fetch(`${API_BASE_URL}/auth/sign-in`, {
+  const data = await request('/auth/sign-in', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: { email: email.trim(), password },
   });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Sign in failed');
-  }
-
-  await saveToken(data.sessionToken);
+  await AsyncStorage.setItem(TOKEN_KEY, data.sessionToken);
   return data.user;
+}
+
+export async function authenticatedRequest(path, options) {
+  const token = await AsyncStorage.getItem(TOKEN_KEY);
+  if (!token) throw new Error('Your session has ended. Please sign in again.');
+  return request(path, { ...options, token });
 }
 
 export async function getCurrentUser() {
-  const token = await getToken();
+  const token = await AsyncStorage.getItem(TOKEN_KEY);
   if (!token) return null;
-
-  const res = await fetch(`${API_BASE_URL}/auth/me`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (!res.ok) {
-    await clearToken();
+  try {
+    const data = await request('/auth/me', { token });
+    return data.user;
+  } catch (error) {
+    if (error.status !== 401) throw error;
+    await AsyncStorage.removeItem(TOKEN_KEY);
     return null;
   }
-
-  const data = await res.json();
-  return data.user;
 }
 
 export async function signOut() {
-  const token = await getToken();
-  if (token) {
-    try {
-      await fetch(`${API_BASE_URL}/auth/sign-out`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    } catch {
-      // Ignore network errors on sign-out
-    }
+  try {
+    await authenticatedRequest('/auth/sign-out', { method: 'POST' });
+  } catch {
+    // Clear the local session even when the server is unavailable.
   }
-  await clearToken();
+  await AsyncStorage.removeItem(TOKEN_KEY);
 }
